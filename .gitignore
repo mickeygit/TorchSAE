@@ -1,0 +1,74 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logging
+logs/
+*.log
+
+# Cache
+cache_full/
+cache_mobile/
+cache_scrfd/
+__cache__/
+
+# Data processing
+data/processed/
+# Test data (do not track large mp4s used for tests)
+tests/data/
+
+# Models (large binary files)
+models/*.pth
+models/*.onnx
+models/*.pt
+models/*.pb
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Shell history (never commit)
+.bash_history
+config.json

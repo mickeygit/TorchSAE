@@ -1,0 +1,21 @@
+python -m app.main train \
+	--data-dir-a data/A \
+	--data-dir-b data/B \
+	--model-size 128 \
+	--archi df \
+	--face-type full \
+	--ae-dims 256 \
+	--e-dims 64 \
+	--d-dims 64 \
+	--d-mask-dims 32 \
+	--batch-size 8 \
+	--max-steps 200000 \
+	--optimizer adamw \
+	--lr 5e-5 \
+	--clip-grad 1.0 \
+	--random-warp \
+	--random-hsv-power 0.1 \
+	--random-noise-power 0.05 \
+	--preview-interval 500 \
+	--save-interval 5000 \
+	--amp
