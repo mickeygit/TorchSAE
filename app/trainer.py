@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from app.data.dataset import FaceDataset
-from app.model.autoencoder_df import DFModel
+from app.models.autoencoder_df import DFModel
 
 
 class Trainer:
