@@ -1,0 +1,22 @@
+# FaceRefinePlayer 依存関係
+# ※ torch / torchvision / onnxruntime-gpu / insightface は Dockerfile 側で固定するため記載しない
+
+# GUI
+PyQt5>=5.15.9
+PyQt5-Qt5>=5.15.2
+PyQt5-sip>=12.11.0
+
+# 画像・動画処理
+opencv-python>=4.8.0
+Pillow>=10.0.0
+
+# 数値計算（numpy は Dockerfile で固定するため記載しない）
+scipy>=1.11.0
+
+# ユーティリティ
+tqdm>=4.65.0
+loguru>=0.7.0
+
+# 設定管理
+pydantic>=2.0.0
+python-dotenv>=1.0.0

@@ -1,0 +1,64 @@
+services:
+  torchsae-service:
+    build:
+      # ★ キャッシュ最適化：context を docker/ に限定
+      context: .
+      dockerfile: Dockerfile
+
+    image: torchsae:latest
+    pull_policy: never # ← run 時の pull を完全禁止
+
+    container_name: torchsae-container
+
+    # GPU設定（NVIDIA Container Toolkit必須）
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+
+    # WSLg/X11表示用設定
+    environment:
+      DISPLAY: ${DISPLAY}
+      XDG_RUNTIME_DIR: /tmp/runtime-root
+      PULSE_SERVER: ${PULSE_SERVER}
+      QT_QPA_PLATFORM: xcb
+      USE_CUDA: 1
+      QT_QPA_PLATFORM_PLUGIN_PATH: /usr/lib/qt5/plugins:/usr/lib/x86_64-linux-gnu/qt5/plugins
+      QT_PLUGIN_PATH: /usr/lib/qt5/plugins:/usr/lib/x86_64-linux-gnu/qt5/plugins
+      LD_LIBRARY_PATH: /usr/lib/x86_64-linux-gnu:/usr/local/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+      LIBGL_ALWAYS_INDIRECT: 1
+      LANG: ja_JP.UTF-8
+      LANGUAGE: ja_JP:ja
+      LC_ALL: ja_JP.UTF-8
+
+      # ★ 履歴を即保存する最強設定
+      PROMPT_COMMAND: "history -a; history -n"
+      HISTSIZE: "50000"
+      HISTFILESIZE: "50000"
+
+    volumes:
+      # WSLg用マウント
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /mnt/wslg:/mnt/wslg:ro
+
+      # アプリケーションコード（開発用）
+      - ../app:/workspace/app:ro
+
+      # データマウント
+      - /mnt/c/Users/mickey/Downloads/dfltest:/workspace/data:rw
+      - ../logs:/workspace/logs:rw
+      - ../models:/workspace/models:ro
+
+      # テストマウント
+      - ../tests:/workspace/tests:rw
+
+      # 設定ファイル
+      - ../config.json:/workspace/config.json:rw
+
+    stdin_open: true
+    tty: true
+
+    network_mode: host
