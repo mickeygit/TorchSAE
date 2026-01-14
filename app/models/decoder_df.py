@@ -17,13 +17,17 @@ class DFDecoder(nn.Module):
     latent → 画像再構成
     """
 
-    def __init__(self, model_size=128, d_dims=64, d_mask_dims=32):
+    def __init__(self, ae_dims=256, e_dims=64, d_dims=64, d_mask_dims=32):
         super().__init__()
 
+        # latent のチャネル数（AE 出力）
+        in_ch = ae_dims
+
+        # decoder の基本チャネル幅
         ch = d_dims
 
         # upsampling blocks
-        self.up1 = conv_block(256, ch * 8)
+        self.up1 = conv_block(in_ch, ch * 8)
         self.up2 = conv_block(ch * 8, ch * 4)
         self.up3 = conv_block(ch * 4, ch * 2)
         self.up4 = conv_block(ch * 2, ch)

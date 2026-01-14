@@ -28,14 +28,13 @@ class DFModel(nn.Module):
         # Two Decoders (A / B)
         # ---------------------------------------------------------
         self.decoder_a = DFDecoder(
-            model_size=cfg.model_size,
             d_dims=cfg.d_dims,
             d_mask_dims=cfg.d_mask_dims,
             ae_dims=cfg.ae_dims,
         )
 
+
         self.decoder_b = DFDecoder(
-            model_size=cfg.model_size,
             d_dims=cfg.d_dims,
             d_mask_dims=cfg.d_mask_dims,
             ae_dims=cfg.ae_dims,

@@ -8,10 +8,11 @@ import torchvision.transforms.functional as TF
 
 class FaceDataset(Dataset):
     """
-    TorchSAE 用の最小 FaceDataset。
+    TorchSAE 用の最小 FaceDataset（安全版）
     - 画像読み込み
     - リサイズ
     - augment（random-warp / hsv / noise）
+    - dtype を float32 に統一（AMP との相性改善）
     """
 
     def __init__(self, root_dir, cfg):
@@ -40,10 +41,9 @@ class FaceDataset(Dataset):
         return img
 
     # ---------------------------------------------------------
-    # Augment: random warp (簡易版)
+    # Augment: random warp（簡易版）
     # ---------------------------------------------------------
     def _random_warp(self, img):
-        # 本家ほど複雑にしない最小 warp
         w, h = img.size
         dx = random.randint(-5, 5)
         dy = random.randint(-5, 5)
@@ -84,9 +84,10 @@ class FaceDataset(Dataset):
 
         img = self._random_hsv(img)
 
-        # PIL → Tensor
-        tensor = TF.to_tensor(img)
+        # PIL → Tensor（float32）
+        tensor = TF.to_tensor(img).float()
 
+        # noise augment
         tensor = self._random_noise(tensor)
 
         return tensor
