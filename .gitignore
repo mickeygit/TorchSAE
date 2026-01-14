@@ -72,3 +72,20 @@ Thumbs.db
 # Shell history (never commit)
 .bash_history
 config.json
+
+# Images
+# Ignore common image formats anywhere in the repository
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.webp
+*.svg
+*.ico
+
+# Common preview/logs image dirs
+previews/
+logs/previews/
