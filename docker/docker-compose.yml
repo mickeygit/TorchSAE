@@ -44,19 +44,14 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
       - /mnt/wslg:/mnt/wslg:ro
 
-      # アプリケーションコード（開発用）
-      - ../app:/workspace/app:ro
+      # プロジェクト全体を /workspace にマウント（コード・データはホストと同期）
+      - ../:/workspace:rw
 
-      # データマウント
-      - /mnt/c/Users/mickey/Downloads/dfltest:/workspace/data:rw
-      - ../logs:/workspace/logs:rw
-      - ../models:/workspace/models:ro
-
-      # テストマウント
-      - ../tests:/workspace/tests:rw
-
-      # 設定ファイル
-      - ../config.json:/workspace/config.json:rw
+      # コンテナ専用スクリプトをホスト側の container-scripts からマウント
+      # → /workspace に置くと bind mount で消えるため、/opt/scripts に隔離する
+      # → Dockerfile の ENV PATH で /opt/scripts を PATH に追加しているので、
+      #    コンテナ内では startup_test.sh などを直接実行できる
+      - ../container-scripts:/opt/scripts:rw
 
     stdin_open: true
     tty: true
