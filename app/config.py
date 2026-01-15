@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-
+from typing import Optional
 
 @dataclass
 class TrainConfig:
@@ -12,14 +12,14 @@ class TrainConfig:
     # ---------------------------------------------------------
     # Model structure
     # ---------------------------------------------------------
-    archi: str              # "df" (LIAE later)
-    model_size: int         # 128 / 256 / 384 / 512
-    face_type: str          # full / head / wf
+    archi: str
+    model_size: int
+    face_type: str
 
-    ae_dims: int            # autoencoder bottleneck dims
-    e_dims: int             # encoder channel dims
-    d_dims: int             # decoder channel dims
-    d_mask_dims: int        # mask decoder dims
+    ae_dims: int
+    e_dims: int
+    d_dims: int
+    d_mask_dims: int
 
     # ---------------------------------------------------------
     # Training
@@ -27,7 +27,7 @@ class TrainConfig:
     batch_size: int
     max_steps: int
 
-    optimizer: str          # adam / adamw
+    optimizer: str
     lr: float
     clip_grad: float
     seed: int
@@ -51,13 +51,17 @@ class TrainConfig:
     amp: bool
 
     # ---------------------------------------------------------
+    # Resume
+    # ---------------------------------------------------------
+    resume_path: Optional[str] = None
+
+    # ---------------------------------------------------------
     # Utility
     # ---------------------------------------------------------
     def is_df(self) -> bool:
         return self.archi == "df"
 
     def summary(self):
-        """Optional: print config summary for debugging."""
         print("=== TorchSAE TrainConfig ===")
         for k, v in self.__dict__.items():
             print(f"{k}: {v}")

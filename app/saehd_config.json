@@ -1,0 +1,23 @@
+{
+    "model_type": "SAEHD",
+    "model_size": 128,
+    "ae_dims": 1024,
+    "e_dims": 256,
+    "d_dims": 256,
+    "d_mask_dims": 256,
+    "inter_dims": 128,
+    "use_attention": true,
+    "attention_heads": 4,
+    "residual_blocks": 4,
+    "batch_size": 8,
+    "lr": 0.0001,
+    "optimizer": "adamw",
+    "amp": true,
+    "clip_grad": 1.0,
+    "data_dir_a": "/workspace/data/A",
+    "data_dir_b": "/workspace/data/B",
+    "max_steps": 300000,
+    "save_interval": 5000,
+    "preview_interval": 1000,
+    "resume_path": null
+}

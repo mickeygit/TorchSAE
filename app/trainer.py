@@ -1,11 +1,9 @@
 from app.utils.preview import save_preview_grid
-from app.utils.checkpoint import save_checkpoint
-
 import os
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from data.dataset import FaceDataset   # ← 修正
+from data.dataset import FaceDataset
 from app.models.autoencoder_df import DFModel
 
 
@@ -56,6 +54,33 @@ class Trainer:
         self.l1 = nn.L1Loss()
         self.global_step = 0
 
+        # ============================
+        # Resume checkpoint loading
+        # ============================
+        if cfg.resume_path is not None and os.path.exists(cfg.resume_path):
+            print(f"[Resume] Loading checkpoint: {cfg.resume_path}")
+
+            state = torch.load(cfg.resume_path, map_location=self.device)
+
+            missing, unexpected = self.model.load_state_dict(state["model"], strict=False)
+            if missing:
+                print(f"[Resume] Missing keys in model: {missing}")
+            if unexpected:
+                print(f"[Resume] Unexpected keys in checkpoint: {unexpected}")
+
+            self.opt.load_state_dict(state["optimizer"])
+
+            if "scaler" in state and state["scaler"]:
+                try:
+                    self.scaler.load_state_dict(state["scaler"])
+                except Exception as e:
+                    print(f"[Resume] Warning: scaler could not be restored ({e})")
+            else:
+                print("[Resume] Warning: scaler state is empty, skipping AMP scaler restore")
+
+            self.global_step = state.get("step", 0)
+            print(f"[Resume] Resumed from step {self.global_step}")
+
     def _next_batch(self, iterator, loader):
         try:
             batch = next(iterator)
@@ -70,6 +95,10 @@ class Trainer:
         while self.global_step < self.cfg.max_steps:
             batch_a, self.iter_a = self._next_batch(self.iter_a, self.loader_a)
             batch_b, self.iter_b = self._next_batch(self.iter_b, self.loader_b)
+
+            # 保存してプレビューで使う
+            self.last_batch_a = batch_a.clone()
+            self.last_batch_b = batch_b.clone()
 
             batch_a = batch_a.to(self.device)
             batch_b = batch_b.to(self.device)
@@ -114,12 +143,25 @@ class Trainer:
             bb=bb.detach().cpu(),
             ab=ab.detach().cpu(),
             ba=ba.detach().cpu(),
-            out_dir="/workspace/logs/previews"   # ← 修正
+            a_orig=self.last_batch_a.cpu(),
+            b_orig=self.last_batch_b.cpu(),
+            out_dir="/workspace/logs/previews",
+            ext="jpg"
         )
 
     def _save_checkpoint(self):
-        save_checkpoint(
-            model=self.model,
-            step=self.global_step,
-            out_dir="/workspace/models"          # ← 修正
+        state = {
+            "step": self.global_step,
+            "config": self.cfg.__dict__,
+            "model": self.model.state_dict(),
+            "optimizer": self.opt.state_dict(),
+            "scaler": self.scaler.state_dict(),
+        }
+
+        out_path = os.path.join(
+            "/workspace/models",
+            f"resume_step_{self.global_step}.pth"
         )
+
+        torch.save(state, out_path)
+        print(f"[Checkpoint] Saved resume checkpoint: {out_path}")
