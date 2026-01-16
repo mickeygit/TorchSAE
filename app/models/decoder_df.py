@@ -5,25 +5,25 @@ import torch.nn as nn
 def conv_block(in_ch, out_ch):
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, 3, padding=1),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU6(inplace=True),
+
         nn.Conv2d(out_ch, out_ch, 3, padding=1),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU6(inplace=True),
     )
 
 
 class DFDecoder(nn.Module):
     """
-    DF decoder (本家 SAEHD の DF を参考にした最小構成)
+    DF decoder (LIAE/DF 共通)
     latent → 画像再構成
     """
 
     def __init__(self, ae_dims=256, e_dims=64, d_dims=64, d_mask_dims=32):
         super().__init__()
 
-        # latent のチャネル数（AE 出力）
         in_ch = ae_dims
-
-        # decoder の基本チャネル幅
         ch = d_dims
 
         # upsampling blocks
@@ -40,6 +40,18 @@ class DFDecoder(nn.Module):
             nn.Sigmoid()
         )
 
+        # initialize weights
+        self._init_weights()
+
+    # ---------------------------------------------------------
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    # ---------------------------------------------------------
     def forward(self, z):
         x = self.up1(z)
         x = self.upsample(x)
