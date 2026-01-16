@@ -54,6 +54,7 @@ models/*.pth
 models/*.onnx
 models/*.pt
 models/*.pb
+*.onnx
 
 # Environment
 .env

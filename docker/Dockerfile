@@ -142,6 +142,9 @@ ENV PATH="/opt/scripts:${PATH}"
 # pytorchをインストールしたpython3.9を優先する。(3.10をつかうことがある）
 ENV PATH="/usr/bin:${PATH}"
 
+# 追加
+RUN apt-get update && apt-get install -y  jq
+
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
