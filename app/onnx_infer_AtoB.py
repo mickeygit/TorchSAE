@@ -106,7 +106,7 @@ def merge_faces(original, converted, mask, mode="color"):
 
 
 # ============================================================
-# A→B 推論（XSeg + DFModel + DFL Merge）
+# A→B 推論（XSeg + TorchSAE DF/LIAE ONNX + DFL Merge）
 # ============================================================
 def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128, merge_mode="color"):
     session, gpu_used = create_session(onnx_path)
@@ -128,6 +128,7 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
     print("Available Merge Modes : raw, alpha, erode, color")
     print(f"ONNX Input Size  : {model_size}×{model_size}")
     print(f"GPU Used         : {'YES' if gpu_used else 'NO'}")
+    print("  ※ TorchSAE DF / LIAE ONNX は同一 IO 仕様 (input_a,input_b → out_ab)")
     print("========================\n")
 
     start_total = time.time()
@@ -140,11 +141,11 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
         # ① XSeg マスク生成
         mask = run_xseg_mask(xseg_session, original)
 
-        # ② DFModel 入力用にマスク済み A を作成
+        # ② TorchSAE 入力用にマスク済み A を作成
         masked_A = original * mask[...,None]
         imgA = load_image_for_onnx_from_array(masked_A, model_size)
 
-        # ③ DFModel 推論
+        # ③ TorchSAE（DF / LIAE）ONNX 推論
         inputs = {"input_a": imgA, "input_b": imgA}
         _, _, out_ab, _ = session.run(None, inputs)
 
@@ -171,15 +172,14 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
     print(f"Time per Image   : {(end_total - start_total)/len(filesA):.3f} sec")
     print(f"GPU Used         : {'YES' if gpu_used else 'NO'}")
     print(f"Merge Mode Used  : {merge_mode}")
+    print("  ※ TorchSAE DF / LIAE ONNX 共通処理")
     print("===============================")
 
 
-# ============================================================
-# main
-# ============================================================
 def main():
     if len(sys.argv) < 5:
-        print("Usage: python3 onnx_infer_AtoB.py dfmodel.onnx xseg.onnx folderA output_folder [model_size] [merge_mode]")
+        print("Usage: python3 onnx_infer_AtoB.py model.onnx xseg.onnx folderA output_folder [model_size] [merge_mode]")
+        print("  model.onnx : TorchSAE DF / LIAE どちらでも可（同一 IO 仕様）")
         sys.exit(1)
 
     onnx_path = sys.argv[1]
@@ -190,7 +190,6 @@ def main():
     merge_mode = sys.argv[6] if len(sys.argv) >= 7 else "color"
 
     run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size, merge_mode)
-
 
 if __name__ == "__main__":
     main()
