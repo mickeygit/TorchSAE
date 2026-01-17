@@ -16,6 +16,6 @@
   "data_dir_b": "/workspace/data/B",
   "max_steps": 300000,
   "save_interval": 300,
-  "preview_interval": 1000,
-  "resume_path": "/workspace/models/resume_step_3300.pth"
+  "preview_interval": 500,
+  "resume_path": "/workspace/models/resume_step_5688.pth"
 }

@@ -6,6 +6,8 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from app.utils.preview import save_preview_grid
 from data.dataset import FaceDataset
+from app.utils.preview import save_liae_preview_with_masks
+# 既存の save_preview_grid を残しておいてもOK
 
 
 # ------------------------------------------------------------
@@ -158,8 +160,10 @@ class BaseTrainer:
         print("=== Training Finished ===")
 
     # ---------------------------------------------------------
+# app/trainers/base_trainer.py
+
     def _save_preview(self, aa, bb, ab, ba):
-        save_preview_grid(
+        save_liae_preview_with_masks(
             step=self.global_step,
             aa=aa.detach().cpu(),
             bb=bb.detach().cpu(),
@@ -168,7 +172,7 @@ class BaseTrainer:
             a_orig=self.last_batch_a.cpu(),
             b_orig=self.last_batch_b.cpu(),
             out_dir="/workspace/logs/previews",
-            ext="jpg"
+            ext="jpg",
         )
 
     # ---------------------------------------------------------
