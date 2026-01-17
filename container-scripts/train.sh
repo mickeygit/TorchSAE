@@ -1,5 +1,11 @@
 #!/bin/bash
 
+echo "[train.sh] Checking landmarks..."
+
+bash ./container-scripts/generate_all_landmarks.sh
+
+exit
+
 # ---------------------------------------------------------
 # Torch Training Launcher (DF / LIAE 両対応)
 # ---------------------------------------------------------
