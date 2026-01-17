@@ -1,8 +1,25 @@
 from dataclasses import dataclass
 from typing import Optional
 
+
 @dataclass
 class TrainConfig:
+    # ---------------------------------------------------------
+    # Model selection
+    # ---------------------------------------------------------
+    model_type: str          # "df" or "liae"
+
+    # ---------------------------------------------------------
+    # Model structure
+    # ---------------------------------------------------------
+    model_size: int
+    ae_dims: int
+    e_dims: int
+    d_dims: int
+    d_mask_dims: int
+    inter_dims: int          # LIAE 用
+    learn_mask: bool
+
     # ---------------------------------------------------------
     # Data
     # ---------------------------------------------------------
@@ -10,45 +27,32 @@ class TrainConfig:
     data_dir_b: str
 
     # ---------------------------------------------------------
-    # Model structure
-    # ---------------------------------------------------------
-    archi: str
-    model_size: int
-    face_type: str
-
-    ae_dims: int
-    e_dims: int
-    d_dims: int
-    d_mask_dims: int
-
-    # ---------------------------------------------------------
     # Training
     # ---------------------------------------------------------
     batch_size: int
     max_steps: int
-
     optimizer: str
     lr: float
     clip_grad: float
-    seed: int
+    amp: bool
 
     # ---------------------------------------------------------
-    # Augmentation
+    # Augmentation（dataset.py が参照する）
     # ---------------------------------------------------------
-    random_warp: bool
-    random_hsv_power: float
-    random_noise_power: float
+    random_warp: bool = False
+    random_hsv_power: float = 0.0
+    random_noise_power: float = 0.0
+
+    # ---------------------------------------------------------
+    # Landmarks（★ 追加：DSSIM + eyes-mouth-prio に必須）
+    # ---------------------------------------------------------
+    use_landmarks: bool = True
 
     # ---------------------------------------------------------
     # Preview / Save
     # ---------------------------------------------------------
-    preview_interval: int
-    save_interval: int
-
-    # ---------------------------------------------------------
-    # AMP
-    # ---------------------------------------------------------
-    amp: bool
+    preview_interval: int = 1000
+    save_interval: int = 5000
 
     # ---------------------------------------------------------
     # Resume
@@ -58,11 +62,8 @@ class TrainConfig:
     # ---------------------------------------------------------
     # Utility
     # ---------------------------------------------------------
-    def is_df(self) -> bool:
-        return self.archi == "df"
-
     def summary(self):
-        print("=== TorchSAE TrainConfig ===")
+        print("=== TrainConfig ===")
         for k, v in self.__dict__.items():
             print(f"{k}: {v}")
-        print("============================")
+        print("===================")

@@ -3,5 +3,11 @@
 from .encoder_df import DFEncoder
 from .decoder_df import DFDecoder
 from .autoencoder_df import DFModel
+from .autoencoder_liae import LIAEModel
 
-__all__ = ["DFEncoder", "DFDecoder", "DFModel"]
+__all__ = [
+    "DFEncoder",
+    "DFDecoder",
+    "DFModel",
+    "LIAEModel",
+]

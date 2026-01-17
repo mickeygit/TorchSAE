@@ -1,38 +1,138 @@
 import os
+import cv2
 import numpy as np
-from PIL import Image
+import torch
+import torchvision.utils as vutils
 
 
 def tensor_to_image(t):
-    arr = (t.numpy().transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
+    """
+    Tensor (N,C,H,W) → uint8 image (H,W,3)
+    [-1,1] or [0,1] どちらでも対応
+    """
+    t = t.detach().cpu()
+    if t.min() < 0:
+        t = (t + 1) / 2
+    t = torch.clamp(t, 0, 1)
+    img = (t[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return img
 
 
-def save_preview_grid(step, aa, bb, ab, ba, a_orig, b_orig, out_dir, ext="jpg"):
+def overlay_heatmap(img, heatmap, alpha=0.4):
+    """
+    heatmap: (H,W) 0〜1
+    """
+    hm = (heatmap * 255).astype(np.uint8)
+    hm_color = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
+    return cv2.addWeighted(img, 1.0, hm_color, alpha, 0)
+
+
+def save_liae_preview_with_masks(
+    step,
+    aa, bb, ab, ba,
+    a_orig, b_orig,
+    out_dir,
+    ext="jpg",
+    mask_a=None,
+    mask_b=None,
+    heatmap_a=None,
+    heatmap_b=None,
+    loss_value=None,
+):
+    """
+    DeepFaceLab-style preview:
+        A_orig | A→A | A→B | mask | blend
+        B_orig | B→B | B→A | mask | blend
+    """
+
     os.makedirs(out_dir, exist_ok=True)
 
-    a0 = tensor_to_image(a_orig[0])
-    b0 = tensor_to_image(b_orig[0])
-    aa0 = tensor_to_image(aa[0])
-    bb0 = tensor_to_image(bb[0])
-    ab0 = tensor_to_image(ab[0])
-    ba0 = tensor_to_image(ba[0])
+    # -----------------------------
+    # Convert tensors to images
+    # -----------------------------
+    A_orig = tensor_to_image(a_orig)
+    B_orig = tensor_to_image(b_orig)
 
-    w, h = a0.size
-    grid = Image.new("RGB", (w * 3, h * 2))
+    AA = tensor_to_image(aa)
+    BB = tensor_to_image(bb)
+    AB = tensor_to_image(ab)
+    BA = tensor_to_image(ba)
 
-    grid.paste(a0, (0, 0))
-    grid.paste(aa0, (w, 0))
-    grid.paste(ab0, (w * 2, 0))
+    H, W, _ = A_orig.shape
 
-    grid.paste(b0, (0, h))
-    grid.paste(bb0, (w, h))
-    grid.paste(ba0, (w * 2, h))
+    # -----------------------------
+    # Mask (if provided)
+    # -----------------------------
+    def mask_to_img(mask):
+        if mask is None:
+            return np.zeros((H, W), np.uint8)
+        m = mask.detach().cpu()[0, 0].numpy()
+        m = np.clip(m, 0, 1)
+        return (m * 255).astype(np.uint8)
 
-    filename = os.path.join(out_dir, f"preview_{step}.{ext}")
+    mask_A = mask_to_img(mask_a)
+    mask_B = mask_to_img(mask_b)
 
-    # ★ JPG → JPEG に変換（ここが重要）
-    fmt = "JPEG" if ext.lower() == "jpg" else ext.upper()
+    # -----------------------------
+    # Blend (DFL-style)
+    # -----------------------------
+    def blend(src, dst, mask):
+        mask_f = mask.astype(np.float32) / 255.0
+        mask_f = cv2.GaussianBlur(mask_f, (21, 21), 0)
+        mask_f = np.clip(mask_f, 0, 1)
+        return (src * mask_f[..., None] + dst * (1 - mask_f[..., None])).astype(np.uint8)
 
-    grid.save(filename, format=fmt)
-    print(f"[Preview] saved: {filename}")
+    blend_A = blend(AB, A_orig, mask_A)
+    blend_B = blend(BA, B_orig, mask_B)
+
+    # -----------------------------
+    # Heatmap overlay (optional)
+    # -----------------------------
+    if heatmap_a is not None:
+        hm_a = heatmap_a.detach().cpu()[0, 0].numpy()
+        A_orig = overlay_heatmap(A_orig, hm_a)
+
+    if heatmap_b is not None:
+        hm_b = heatmap_b.detach().cpu()[0, 0].numpy()
+        B_orig = overlay_heatmap(B_orig, hm_b)
+
+    # -----------------------------
+    # Build preview grid
+    # -----------------------------
+    row_A = np.hstack([
+        A_orig,
+        AA,
+        AB,
+        cv2.cvtColor(mask_A, cv2.COLOR_GRAY2BGR),
+        blend_A,
+    ])
+
+    row_B = np.hstack([
+        B_orig,
+        BB,
+        BA,
+        cv2.cvtColor(mask_B, cv2.COLOR_GRAY2BGR),
+        blend_B,
+    ])
+
+    preview = np.vstack([row_A, row_B])
+
+    # -----------------------------
+    # Draw text (step / loss)
+    # -----------------------------
+    text = f"step: {step}"
+    if loss_value is not None:
+        text += f"  loss: {loss_value:.4f}"
+
+    cv2.putText(
+        preview, text, (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
+    )
+
+    # -----------------------------
+    # Save (2× upscale for visibility)
+    # -----------------------------
+    preview_big = cv2.resize(preview, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+
+    out_path = os.path.join(out_dir, f"preview_{step:06d}.{ext}")
+    cv2.imwrite(out_path, preview_big)
