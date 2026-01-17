@@ -18,5 +18,5 @@
   "max_steps": 300000,
   "save_interval": 500,
   "preview_interval": 300,
-  "resume_path": "/workspace/models/resume_step_3693.pth"
+  "resume_path": "/workspace/models/resume_step_6808.pth"
 }
