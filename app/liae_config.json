@@ -5,6 +5,7 @@
   "e_dims": 128,
   "d_dims": 128,
   "d_mask_dims": 128,
+  "learn_mask": true,
   "inter_dims": 64,
   "batch_size": 12,
   "lr": 8e-05,
@@ -16,5 +17,5 @@
   "max_steps": 300000,
   "save_interval": 300,
   "preview_interval": 1000,
-  "resume_path": null
+  "resume_path": "/workspace/models/resume_step_3300.pth"
 }

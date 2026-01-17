@@ -18,6 +18,7 @@ class TrainConfig:
     d_dims: int
     d_mask_dims: int
     inter_dims: int          # LIAE 用
+    learn_mask: bool         # ★ デフォルトなしに変更（順序のため）
 
     # ---------------------------------------------------------
     # Data
