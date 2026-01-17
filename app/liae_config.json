@@ -6,7 +6,7 @@
   "d_dims": 128,
   "d_mask_dims": 128,
   "inter_dims": 64,
-  "batch_size": 24,
+  "batch_size": 12,
   "lr": 8e-05,
   "optimizer": "adam",
   "amp": true,
@@ -14,7 +14,7 @@
   "data_dir_a": "/workspace/data/A",
   "data_dir_b": "/workspace/data/B",
   "max_steps": 300000,
-  "save_interval": 5000,
+  "save_interval": 300,
   "preview_interval": 1000,
   "resume_path": null
 }
