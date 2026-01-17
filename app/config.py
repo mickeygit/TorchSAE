@@ -2,62 +2,57 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass
+# app/train_config.py
+
 class TrainConfig:
-    # ---------------------------------------------------------
-    # Model selection
-    # ---------------------------------------------------------
-    model_type: str          # "df" or "liae"
+    def __init__(self, **kwargs):
+        # JSON のキーを全部属性にする
+        for k, v in kwargs.items():
+            setattr(self, k, v)
 
-    # ---------------------------------------------------------
-    # Model structure
-    # ---------------------------------------------------------
-    model_size: int
-    ae_dims: int
-    e_dims: int
-    d_dims: int
-    d_mask_dims: int
-    inter_dims: int          # LIAE 用
-    learn_mask: bool
+        # デフォルト値
+        defaults = {
+            "model_name": "LIAE",
+            "model_size": 128,
 
-    # ---------------------------------------------------------
-    # Data
-    # ---------------------------------------------------------
-    data_dir_a: str
-    data_dir_b: str
+            "data_a": None,
+            "data_b": None,
 
-    # ---------------------------------------------------------
-    # Training
-    # ---------------------------------------------------------
-    batch_size: int
-    max_steps: int
-    optimizer: str
-    lr: float
-    clip_grad: float
-    amp: bool
+            "save_dir": "/workspace/models",
+            "resume_path": None,
 
-    # ---------------------------------------------------------
-    # Augmentation（dataset.py が参照する）
-    # ---------------------------------------------------------
-    random_warp: bool = False
-    random_hsv_power: float = 0.0
-    random_noise_power: float = 0.0
+            "batch_size": 8,
+            "num_workers": 4,
 
-    # ---------------------------------------------------------
-    # Landmarks（★ 追加：DSSIM + eyes-mouth-prio に必須）
-    # ---------------------------------------------------------
-    use_landmarks: bool = True
+            "lr": 0.00008,
+            "optimizer": "adam",
+            "clip_grad": 1,
 
-    # ---------------------------------------------------------
-    # Preview / Save
-    # ---------------------------------------------------------
-    preview_interval: int = 1000
-    save_interval: int = 5000
+            "amp": True,
 
-    # ---------------------------------------------------------
-    # Resume
-    # ---------------------------------------------------------
-    resume_path: Optional[str] = None
+            "random_warp": False,
+            "random_hsv_power": 0.0,
+            "random_noise_power": 0.0,
+
+            "e_dims": 128,
+            "ae_dims": 512,
+            "d_dims": 128,
+            "d_mask_dims": 128,
+            "learn_mask": True,
+
+            "use_landmarks": True,
+            "mask_loss_weight": 0.1,
+            "landmark_loss_weight": 0.01,
+
+            "preview_interval": 300,
+            "save_interval": 500
+        }
+
+        # デフォルト値を埋める
+        for k, v in defaults.items():
+            if not hasattr(self, k):
+                setattr(self, k, v)
+
 
     # ---------------------------------------------------------
     # Utility

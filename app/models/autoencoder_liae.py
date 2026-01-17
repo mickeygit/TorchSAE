@@ -121,7 +121,7 @@ class LIAEMaskDecoder(nn.Module):
 
 
 # ============================================================
-# LIAE Model（本家方式：RGB + 1ch landmarks heatmap）
+# LIAE Model（LIAE + SAEHD 風：RGB + 1ch landmarks heatmap + lm head）
 # ============================================================
 
 class LIAEModel(nn.Module):
@@ -141,12 +141,22 @@ class LIAEModel(nn.Module):
         enc_spatial = res // 16
         enc_out_ch = e_dims * 8
         latent_dim = enc_spatial * enc_spatial * enc_out_ch
+        self.enc_out_ch = enc_out_ch  # landmark head 用に保持
 
         self.inter_B = LIAEInter(latent_dim, e_dims, enc_spatial, ae_dims)
         self.inter_AB = LIAEInter(latent_dim, e_dims, enc_spatial, ae_dims)
 
         self.decoder = LIAEDecoder(out_ch=3, base_ch=d_dims)
         self.mask_decoder = LIAEMaskDecoder(base_ch=d_mask_dims)
+
+        # ★ 追加: landmark prediction head（SAEHD 風）
+        self.lm_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Flatten(),
+            nn.Linear(self.enc_out_ch, 256),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Linear(256, 68 * 2),
+        )
 
     # ---------------------------------------------------------
     # landmarks → 1ch heatmap（本家と同じ思想）
@@ -199,8 +209,12 @@ class LIAEModel(nn.Module):
         ab = self.decoder(B_b)
         ba = self.decoder(B_a)
 
-        # ★ ここが抜けていた：mask 生成
-        mask_a = torch.sigmoid(self.mask_decoder(AB_a))
-        mask_b = torch.sigmoid(self.mask_decoder(AB_b))
+        # mask 生成（logits をそのまま返す）
+        mask_a = self.mask_decoder(AB_a)
+        mask_b = self.mask_decoder(AB_b)
 
-        return aa, bb, ab, ba, mask_a, mask_b
+        # ★ 追加: landmark 予測（SAEHD 風）
+        lm_a_pred = self.lm_head(AB_a).view(N, 68, 2)
+        lm_b_pred = self.lm_head(AB_b).view(N, 68, 2)
+
+        return aa, bb, ab, ba, mask_a, mask_b, lm_a_pred, lm_b_pred

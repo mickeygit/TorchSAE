@@ -1,170 +1,202 @@
 # app/trainers/base_trainer.py
 
 import os
+import time
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
-from data.dataset import FaceDataset
-from app.utils.preview import save_liae_preview_with_masks
-
-
-def print_startup_banner(cfg):
-    print("============================================================")
-    print("==              TorchSAE Trainer (PyTorch)                ==")
-    print("============================================================")
-    print(f"==  Model: {cfg.model_type}")
-    print(f"==  Resolution: {cfg.model_size}")
-    print(f"==  Encoder dims: {cfg.e_dims}")
-    print(f"==  AE dims: {cfg.ae_dims}")
-    print(f"==  Decoder dims: {cfg.d_dims}")
-    print(f"==  Mask dims: {cfg.d_mask_dims}")
-    print(f"==  Learn Mask: {cfg.learn_mask}")
-    print("============================================================")
-    print("==  Starting training...")
-    print("==  Press Ctrl+C to save and exit safely.")
-    print("============================================================")
+from torch.cuda.amp import GradScaler
 
 
 class BaseTrainer:
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.scaler = torch.cuda.amp.GradScaler(enabled=cfg.amp)
 
-        # Dataset
-        self.dataset_a = FaceDataset(cfg.data_dir_a, cfg)
-        self.dataset_b = FaceDataset(cfg.data_dir_b, cfg)
-
-        self.loader_a = DataLoader(
-            self.dataset_a,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-            drop_last=True
-        )
-        self.loader_b = DataLoader(
-            self.dataset_b,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=2,
-            pin_memory=True,
-            drop_last=True
-        )
-
-        self.iter_a = iter(self.loader_a)
-        self.iter_b = iter(self.loader_b)
-
-        # モデルはサブクラスで定義される
-        self.model = None
-        self.opt = None
+        self.model = None          # 子クラスでセット
+        self.opt = None            # 子クラスでセット
+        self.scaler = GradScaler(enabled=cfg.amp)
 
         self.global_step = 0
+        self.start_time = time.time()
+
+        self.save_dir = cfg.save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
 
     # ---------------------------------------------------------
-    def _next_batch(self, iterator, loader):
-        try:
-            batch = next(iterator)
-        except StopIteration:
-            iterator = iter(loader)
-            batch = next(iterator)
-        return batch, iterator
+    # 子クラスで実装する必要があるメソッド
+    # ---------------------------------------------------------
+    def train_step(self, batch_a, batch_b):
+        """
+        1 step 分の学習を行う。
+        戻り値:
+          loss_value, outputs
+        """
+        raise NotImplementedError
+
+    def make_preview(self, outputs, batch_a, batch_b):
+        """
+        プレビュー用の dict を返す。
+        """
+        raise NotImplementedError
 
     # ---------------------------------------------------------
-    def _load_resume(self):
-        if self.cfg.resume_path is None:
-            print("[Resume] No resume_path set.")
-            return
-
-        if not os.path.exists(self.cfg.resume_path):
-            print(f"[Resume] File not found: {self.cfg.resume_path}")
-            return
-
-        print(f"[Resume] Loading checkpoint: {self.cfg.resume_path}")
-        state = torch.load(self.cfg.resume_path, map_location=self.device)
-
-        self.global_step = state.get("step", 0)
-        self.model.load_state_dict(state["model"])
-        self.opt.load_state_dict(state["optimizer"])
-        self.scaler.load_state_dict(state["scaler"])
-
-        print(f"[Resume] Resumed from step {self.global_step}")
-
-    # ---------------------------------------------------------
-    # Main training loop（landmarks 対応）
-    # ---------------------------------------------------------
-    def run(self):
-        print_startup_banner(self.cfg)
-        print("=== Training Start ===")
-
-        self._load_resume()
-
-        try:
-            while self.global_step < self.cfg.max_steps:
-
-                # (img, lm) を取得
-                batch_a, self.iter_a = self._next_batch(self.iter_a, self.loader_a)
-                batch_b, self.iter_b = self._next_batch(self.iter_b, self.loader_b)
-
-                img_a, lm_a = batch_a
-                img_b, lm_b = batch_b
-
-                # preview 用に保存（画像のみ）
-                self.last_batch_a = img_a.clone()
-                self.last_batch_b = img_b.clone()
-
-                # サブクラスの train_step を呼ぶ
-                loss, outputs = self.train_step(batch_a, batch_b)
-
-                self.global_step += 1
-
-                if self.global_step % 100 == 0:
-                    print(f"[{self.global_step}] loss={loss:.4f}")
-
-                if self.global_step % self.cfg.preview_interval == 0:
-                    aa, bb, ab, ba, mask_a, mask_b = outputs
-                    self._save_preview(aa, bb, ab, ba, mask_a, mask_b)
-
-                if self.global_step % self.cfg.save_interval == 0:
-                    self._save_checkpoint()
-
-        except KeyboardInterrupt:
-            print("\n[INFO] Training interrupted by user. Saving checkpoint...")
-            self._save_checkpoint()
-            print("[INFO] Checkpoint saved. Exiting safely.")
-
-        print("=== Training Finished ===")
-
-    # ---------------------------------------------------------
-    def _save_preview(self, aa, bb, ab, ba, mask_a, mask_b):
-        save_liae_preview_with_masks(
-            step=self.global_step,
-            aa=aa.detach().cpu(),
-            bb=bb.detach().cpu(),
-            ab=ab.detach().cpu(),
-            ba=ba.detach().cpu(),
-            mask_a=mask_a.detach().cpu(),
-            mask_b=mask_b.detach().cpu(),
-            a_orig=self.last_batch_a.cpu(),
-            b_orig=self.last_batch_b.cpu(),
-            out_dir="/workspace/logs/previews",
-            ext="jpg",
-        )
-
+    # checkpoint 保存 / ロード
     # ---------------------------------------------------------
     def _save_checkpoint(self):
         state = {
             "step": self.global_step,
-            "config": self.cfg.__dict__,
             "model": self.model.state_dict(),
             "optimizer": self.opt.state_dict(),
-            "scaler": self.scaler.state_dict(),
         }
+        path = os.path.join(self.save_dir, f"step_{self.global_step}.pth")
+        torch.save(state, path)
+        print(f"[Save] Saved checkpoint: {path}")
 
-        out_path = os.path.join(
-            "/workspace/models",
-            f"resume_step_{self.global_step}.pth"
+    def _load_resume(self):
+        if getattr(self.cfg, "resume_path", None) is None:
+            return
+
+        resume_path = self.cfg.resume_path
+        if not os.path.exists(resume_path):
+            print(f"[Resume] resume_path not found: {resume_path}")
+            return
+
+        print(f"[Resume] Loading checkpoint: {resume_path}")
+        state = torch.load(resume_path, map_location=self.device)
+
+        # ★ モデルは strict=False で部分ロード（lm_head 追加などに対応）
+        self.model.load_state_dict(state["model"], strict=False)
+
+        if "optimizer" in state:
+            try:
+                self.opt.load_state_dict(state["optimizer"])
+            except Exception as e:
+                print("[Warn] Optimizer state mismatch. Skipping optimizer state.")
+
+        # step は引き継ぐ
+        if "step" in state:
+            self.global_step = state["step"]
+            print(f"[Resume] Resumed from step {self.global_step}")
+
+    # ---------------------------------------------------------
+    # メインループ
+    # ---------------------------------------------------------
+    def run(self):
+        from app.data.dataset import FaceDataset
+        from torch.utils.data import DataLoader
+
+        # Dataset / DataLoader 準備
+        ds_a = FaceDataset(self.cfg.data_a, self.cfg)
+        ds_b = FaceDataset(self.cfg.data_b, self.cfg)
+
+        dl_a = DataLoader(
+            ds_a,
+            batch_size=self.cfg.batch_size,
+            shuffle=True,
+            num_workers=self.cfg.num_workers,
+            drop_last=True,
+            pin_memory=True,
+        )
+        dl_b = DataLoader(
+            ds_b,
+            batch_size=self.cfg.batch_size,
+            shuffle=True,
+            num_workers=self.cfg.num_workers,
+            drop_last=True,
+            pin_memory=True,
         )
 
-        torch.save(state, out_path)
-        print(f"[Checkpoint] Saved: {out_path}")
+        it_a = iter(dl_a)
+        it_b = iter(dl_b)
+
+        # resume
+        self._load_resume()
+
+        print("============================================================")
+        print("==              TorchSAE Trainer (PyTorch)                ==")
+        print("============================================================")
+        print(f"==  Model: {self.cfg.model_name}")
+        print(f"==  Resolution: {self.cfg.model_size}")
+        print(f"==  Encoder dims: {self.cfg.e_dims}")
+        print(f"==  AE dims: {self.cfg.ae_dims}")
+        print(f"==  Decoder dims: {self.cfg.d_dims}")
+        print(f"==  Mask dims: {self.cfg.d_mask_dims}")
+        print(f"==  Learn Mask: {self.cfg.learn_mask}")
+        print("============================================================")
+        print("==  Starting training...")
+        print("==  Press Ctrl+C to save and exit safely.")
+        print("============================================================")
+        print("=== Training Start ===")
+
+        try:
+            while True:
+                try:
+                    batch_a = next(it_a)
+                except StopIteration:
+                    it_a = iter(dl_a)
+                    batch_a = next(it_a)
+
+                try:
+                    batch_b = next(it_b)
+                except StopIteration:
+                    it_b = iter(dl_b)
+                    batch_b = next(it_b)
+
+                loss, outputs = self.train_step(batch_a, batch_b)
+                self.global_step += 1
+
+                if self.global_step % 50 == 0:
+                    elapsed = time.time() - self.start_time
+                    print(f"[Step {self.global_step}] loss={loss:.4f}  elapsed={elapsed/60:.1f} min")
+
+                if self.global_step % self.cfg.save_interval == 0:
+                    self._save_checkpoint()
+
+                if self.global_step % self.cfg.preview_interval == 0:
+                    try:
+                        preview = self.make_preview(outputs, batch_a, batch_b)
+
+                        import torchvision.utils as vutils
+                        import os
+                        import torch
+
+                        # --- 画像取り出し ---
+                        a_orig = preview["a_orig"][0]      # [3,128,128]
+                        b_orig = preview["b_orig"][0]      # [3,128,128]
+
+                        aa = preview["aa"][0]
+                        bb = preview["bb"][0]
+                        ab = preview["ab"][0]
+                        ba = preview["ba"][0]
+
+                        mask_a = torch.sigmoid(preview["mask_a"][0])  # [1,128,128]
+                        mask_b = torch.sigmoid(preview["mask_b"][0])  # [1,128,128]
+
+                        # --- mask を RGB に変換 ---
+                        mask_a_rgb = mask_a.repeat(3, 1, 1)
+                        mask_b_rgb = mask_b.repeat(3, 1, 1)
+
+                        # --- SAEHD 本家と同じ並び ---
+                        # A_orig | AA | AB | mask_A
+                        # B_orig | BB | BA | mask_B
+                        grid = vutils.make_grid(
+                            [
+                                a_orig, aa, ab, mask_a_rgb,
+                                b_orig, bb, ba, mask_b_rgb,
+                            ],
+                            nrow=4,
+                            normalize=True,
+                            value_range=(0, 1),
+                        )
+
+                        # 保存
+                        preview_path = os.path.join(self.save_dir, f"preview_{self.global_step}.jpg")
+                        vutils.save_image(grid, preview_path)
+                        print(f"[Preview] Saved: {preview_path}")
+
+                    except Exception as e:
+                        print(f"[Preview] Failed: {e}")
+
+        except KeyboardInterrupt:
+            print("\n[Exit] Caught Ctrl+C, saving final checkpoint...")
+            self._save_checkpoint()
+            print("[Exit] Done.")
