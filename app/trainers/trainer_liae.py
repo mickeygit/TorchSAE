@@ -9,6 +9,7 @@ from app.models.autoencoder_liae import LIAEModel
 # 追加：軽量 SAEHD loss
 from app.losses.loss_saehd_light import SAEHDLightLoss
 
+from utils.preview import make_saehd_style_preview
 
 class TrainerLIAE(BaseTrainer):
     """
@@ -95,3 +96,29 @@ class TrainerLIAE(BaseTrainer):
             "a_orig": img_a.cpu(),
             "b_orig": img_b.cpu(),
         }
+
+    @torch.no_grad()
+    def get_preview_batch(self, batch_a, batch_b):
+        """
+        batch_a, batch_b:
+          (img, landmarks, mask_gt, ...)
+        """
+        img_a = batch_a["img"]      # (B,3,H,W), 0-1
+        img_b = batch_b["img"]
+
+        # モデルの forward（あなたの実装に合わせて）
+        out = self.model(img_a, img_b)
+        # 例: out = (aa, bb, ab, mask_a_pred, mask_b_pred)
+        aa, bb, ab, mask_a_pred, mask_b_pred = out
+
+        preview = make_saehd_style_preview(
+            img_a, img_b,
+            aa, bb,
+            ab,
+            mask_b_pred,
+        )
+
+        # 1枚だけ取り出して numpy に
+        p = preview[0].detach().cpu().permute(1,2,0).numpy()
+        p = (p * 255).clip(0,255).astype("uint8")
+        return p

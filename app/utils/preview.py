@@ -136,3 +136,29 @@ def save_liae_preview_with_masks(
 
     out_path = os.path.join(out_dir, f"preview_{step:06d}.{ext}")
     cv2.imwrite(out_path, preview_big)
+
+def mask_overlay_bgr(img, mask, color=(0,1,0), alpha=0.5):
+    """
+    img:  (B,3,H,W) float32 0-1
+    mask: (B,1,H,W) float32 0-1
+    """
+    mask_bin = (mask > 0.5).float()
+    color_t = torch.tensor(color, dtype=img.dtype, device=img.device).view(1,3,1,1)
+    overlay = img * (1 - alpha * mask_bin) + color_t * (alpha * mask_bin)
+    return overlay
+
+def make_saehd_style_preview(img_a, img_b, aa, bb, ab, mask_b):
+    """
+    本家 SAEHD と同じ並び:
+    [src] [dst]
+    [src→src] [dst→dst]
+    [src→dst] [src→dst + mask overlay]
+    """
+    ab_masked = mask_overlay_bgr(ab, mask_b, color=(0,1,0), alpha=0.5)
+
+    row1 = torch.cat([img_a, img_b], dim=3)
+    row2 = torch.cat([aa, bb], dim=3)
+    row3 = torch.cat([ab, ab_masked], dim=3)
+
+    preview = torch.cat([row1, row2, row3], dim=2)
+    return preview
