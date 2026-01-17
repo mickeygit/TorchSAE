@@ -6,6 +6,9 @@ import torch.nn as nn
 from app.trainers.base_trainer import BaseTrainer
 from app.models.autoencoder_liae import LIAEModel
 
+# 追加：軽量 SAEHD loss
+from app.losses.loss_saehd_light import SAEHDLightLoss
+
 
 class TrainerLIAE(BaseTrainer):
     """
@@ -33,27 +36,38 @@ class TrainerLIAE(BaseTrainer):
         else:
             self.opt = torch.optim.AdamW(self.model.parameters(), lr=cfg.lr)
 
-        # Loss
-        self.l1 = nn.L1Loss()
+        # ---------------------------------------------------------
+        # Loss (DSSIM + L1 + eyes-mouth-prio)
+        # ---------------------------------------------------------
+        self.loss_fn = SAEHDLightLoss(resolution=cfg.model_size)
 
     # ---------------------------------------------------------
-    # One training step
+    # One training step (landmarks 対応)
     # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
         """
-        batch_a, batch_b: (N, C, H, W)
+        batch_a, batch_b: (img_tensor, landmarks_tensor)
+            img_tensor: (N, 3, H, W)
+            landmarks_tensor: (N, 68, 2)
         """
 
-        batch_a = batch_a.to(self.device)
-        batch_b = batch_b.to(self.device)
+        img_a, lm_a = batch_a
+        img_b, lm_b = batch_b
+
+        img_a = img_a.to(self.device)
+        img_b = img_b.to(self.device)
+        lm_a = lm_a.to(self.device)
+        lm_b = lm_b.to(self.device)
 
         with torch.cuda.amp.autocast(enabled=self.cfg.amp):
-            aa, bb, ab, ba = self.model(batch_a, batch_b)
+            # LIAEModel は landmarks heatmap を内部で生成する
+            aa, bb, ab, ba = self.model(img_a, img_b, lm_a, lm_b)
 
-            loss_aa = self.l1(aa, batch_a)
-            loss_bb = self.l1(bb, batch_b)
-            loss_ab = self.l1(ab, batch_b)
-            loss_ba = self.l1(ba, batch_a)
+            # loss_fn は landmarks を使う（eyes/mouth weight）
+            loss_aa = self.loss_fn(aa, img_a, lm_a)
+            loss_bb = self.loss_fn(bb, img_b, lm_b)
+            loss_ab = self.loss_fn(ab, img_b, lm_b)
+            loss_ba = self.loss_fn(ba, img_a, lm_a)
 
             loss = loss_aa + loss_bb + loss_ab + loss_ba
 
@@ -76,14 +90,17 @@ class TrainerLIAE(BaseTrainer):
     def make_preview(self, outputs, batch_a, batch_b):
         """
         outputs: (aa, bb, ab, ba)
+        batch_a, batch_b: (img, lm)
         """
         aa, bb, ab, ba = outputs
+        img_a, _ = batch_a
+        img_b, _ = batch_b
 
         return {
             "aa": aa.detach().cpu(),
             "bb": bb.detach().cpu(),
             "ab": ab.detach().cpu(),
             "ba": ba.detach().cpu(),
-            "a_orig": batch_a.cpu(),
-            "b_orig": batch_b.cpu(),
+            "a_orig": img_a.cpu(),
+            "b_orig": img_b.cpu(),
         }

@@ -55,6 +55,7 @@ models/*.onnx
 models/*.pt
 models/*.pb
 *.onnx
+*.npy
 
 # Environment
 .env

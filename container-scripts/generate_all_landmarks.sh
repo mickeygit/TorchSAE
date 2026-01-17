@@ -5,7 +5,7 @@ SCRIPT=/workspace/app/generate_landmarks_from_2DFAN.py
 
 FAN_MODEL="/workspace/app/models/fan/2DFAN-4.pth.tar"
 
-python3.9 -m pip install face-alignment==1.3.4 --no-deps
+$PYTHON -m pip install face-alignment==1.3.4 --no-deps
 
 echo "[Landmarks] Generating for A..."
 $PYTHON $SCRIPT /workspace/data/A $FAN_MODEL

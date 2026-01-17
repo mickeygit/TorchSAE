@@ -18,7 +18,7 @@ class TrainConfig:
     d_dims: int
     d_mask_dims: int
     inter_dims: int          # LIAE 用
-    learn_mask: bool         # ★ デフォルトなしに変更（順序のため）
+    learn_mask: bool
 
     # ---------------------------------------------------------
     # Data
@@ -42,6 +42,11 @@ class TrainConfig:
     random_warp: bool = False
     random_hsv_power: float = 0.0
     random_noise_power: float = 0.0
+
+    # ---------------------------------------------------------
+    # Landmarks（★ 追加：DSSIM + eyes-mouth-prio に必須）
+    # ---------------------------------------------------------
+    use_landmarks: bool = True
 
     # ---------------------------------------------------------
     # Preview / Save

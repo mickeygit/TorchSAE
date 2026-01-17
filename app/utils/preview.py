@@ -1,144 +1,138 @@
 import os
+import cv2
 import numpy as np
-from PIL import Image
+import torch
+import torchvision.utils as vutils
 
 
 def tensor_to_image(t):
-    arr = (t.numpy().transpose(1, 2, 0) * 255).clip(0, 255).astype(np.uint8)
-    return Image.fromarray(arr)
-
-
-def save_preview_grid(step, aa, bb, ab, ba, a_orig, b_orig, out_dir, ext="jpg"):
-    os.makedirs(out_dir, exist_ok=True)
-
-    a0 = tensor_to_image(a_orig[0])
-    b0 = tensor_to_image(b_orig[0])
-    aa0 = tensor_to_image(aa[0])
-    bb0 = tensor_to_image(bb[0])
-    ab0 = tensor_to_image(ab[0])
-    ba0 = tensor_to_image(ba[0])
-
-    w, h = a0.size
-    grid = Image.new("RGB", (w * 3, h * 2))
-
-    grid.paste(a0, (0, 0))
-    grid.paste(aa0, (w, 0))
-    grid.paste(ab0, (w * 2, 0))
-
-    grid.paste(b0, (0, h))
-    grid.paste(bb0, (w, h))
-    grid.paste(ba0, (w * 2, h))
-
-    filename = os.path.join(out_dir, f"preview_{step}.{ext}")
-
-    # ★ JPG → JPEG に変換（ここが重要）
-    fmt = "JPEG" if ext.lower() == "jpg" else ext.upper()
-
-    grid.save(filename, format=fmt)
-    print(f"[Preview] saved: {filename}")
-
-# app/utils/preview.py
-
-import os
-import torch
-import torchvision.utils as vutils
-import torch.nn.functional as F
-
-
-def _extract_mask_from_rgba(x: torch.Tensor) -> torch.Tensor:
     """
-    x: (N, C, H, W)
-    RGBA を想定して A チャンネルをマスクとして取り出す。
-    C==4 でない場合は None を返す。
+    Tensor (N,C,H,W) → uint8 image (H,W,3)
+    [-1,1] or [0,1] どちらでも対応
     """
-    if x.shape[1] == 4:
-        # A チャンネルを [0,1] に正規化して返す
-        mask = x[:, 3:4]
-        mask = torch.clamp(mask, 0.0, 1.0)
-        return mask
-    return None
+    t = t.detach().cpu()
+    if t.min() < 0:
+        t = (t + 1) / 2
+    t = torch.clamp(t, 0, 1)
+    img = (t[0].permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    return img
 
 
-def _make_overlay(face: torch.Tensor, mask: torch.Tensor, color=(1.0, 0.0, 0.0), alpha=0.4):
+def overlay_heatmap(img, heatmap, alpha=0.4):
     """
-    face: (N, 3, H, W) [0,1]
-    mask: (N, 1, H, W) [0,1]
-    color: overlay color (R,G,B)
-    alpha: overlay strength
+    heatmap: (H,W) 0〜1
     """
-    if face.shape[1] == 4:
-        face = face[:, :3]
+    hm = (heatmap * 255).astype(np.uint8)
+    hm_color = cv2.applyColorMap(hm, cv2.COLORMAP_JET)
+    return cv2.addWeighted(img, 1.0, hm_color, alpha, 0)
 
-    # マスクを 3ch に拡張
-    mask3 = mask.repeat(1, 3, 1, 1)
-
-    # カラーのテンソルを作成
-    c = torch.tensor(color, dtype=face.dtype, device=face.device).view(1, 3, 1, 1)
-    color_img = c.expand_as(face)
-
-    # face と color_img をマスクでブレンド
-    overlay = face * (1 - alpha * mask3) + color_img * (alpha * mask3)
-    overlay = torch.clamp(overlay, 0.0, 1.0)
-    return overlay
 
 def save_liae_preview_with_masks(
-    step: int,
-    aa: torch.Tensor,
-    bb: torch.Tensor,
-    ab: torch.Tensor,
-    ba: torch.Tensor,
-    a_orig: torch.Tensor,
-    b_orig: torch.Tensor,
-    out_dir: str,
-    ext: str = "jpg",
+    step,
+    aa, bb, ab, ba,
+    a_orig, b_orig,
+    out_dir,
+    ext="jpg",
+    mask_a=None,
+    mask_b=None,
+    heatmap_a=None,
+    heatmap_b=None,
+    loss_value=None,
 ):
-    import os
-    import torchvision.utils as vutils
-    import torch
+    """
+    DeepFaceLab-style preview:
+        A_orig | A→A | A→B | mask | blend
+        B_orig | B→B | B→A | mask | blend
+    """
 
     os.makedirs(out_dir, exist_ok=True)
 
-    # RGB 化
-    def to_rgb(x):
-        return x[:, :3] if x.shape[1] == 4 else x
+    # -----------------------------
+    # Convert tensors to images
+    # -----------------------------
+    A_orig = tensor_to_image(a_orig)
+    B_orig = tensor_to_image(b_orig)
 
-    a_rgb = to_rgb(a_orig)
-    b_rgb = to_rgb(b_orig)
-    aa_rgb = to_rgb(aa)
-    bb_rgb = to_rgb(bb)
-    ab_rgb = to_rgb(ab)
-    ba_rgb = to_rgb(ba)
+    AA = tensor_to_image(aa)
+    BB = tensor_to_image(bb)
+    AB = tensor_to_image(ab)
+    BA = tensor_to_image(ba)
 
-    # ---- 1行目（横に並べる）----
-    row1 = torch.cat([a_rgb, aa_rgb, ab_rgb, ba_rgb], dim=3)[0:1]
+    H, W, _ = A_orig.shape
 
-    # ---- 2行目 ----
-    row2 = torch.cat([b_rgb, bb_rgb, ba_rgb, ab_rgb], dim=3)[0:1]
+    # -----------------------------
+    # Mask (if provided)
+    # -----------------------------
+    def mask_to_img(mask):
+        if mask is None:
+            return np.zeros((H, W), np.uint8)
+        m = mask.detach().cpu()[0, 0].numpy()
+        m = np.clip(m, 0, 1)
+        return (m * 255).astype(np.uint8)
 
-    rows = [row1, row2]
+    mask_A = mask_to_img(mask_a)
+    mask_B = mask_to_img(mask_b)
 
-    # ---- 3行目（マスクがある場合のみ）----
-    if ab.shape[1] == 4:
-        ab_mask = ab[:, 3:4]
-        ba_mask = ba[:, 3:4]
+    # -----------------------------
+    # Blend (DFL-style)
+    # -----------------------------
+    def blend(src, dst, mask):
+        mask_f = mask.astype(np.float32) / 255.0
+        mask_f = cv2.GaussianBlur(mask_f, (21, 21), 0)
+        mask_f = np.clip(mask_f, 0, 1)
+        return (src * mask_f[..., None] + dst * (1 - mask_f[..., None])).astype(np.uint8)
 
-        ab_mask3 = ab_mask.repeat(1, 3, 1, 1)
-        ba_mask3 = ba_mask.repeat(1, 3, 1, 1)
+    blend_A = blend(AB, A_orig, mask_A)
+    blend_B = blend(BA, B_orig, mask_B)
 
-        def overlay(face, mask):
-            mask3 = mask.repeat(1, 3, 1, 1)
-            red = torch.tensor([1, 0, 0], device=face.device).view(1, 3, 1, 1)
-            return face * (1 - 0.5 * mask3) + red * (0.5 * mask3)
+    # -----------------------------
+    # Heatmap overlay (optional)
+    # -----------------------------
+    if heatmap_a is not None:
+        hm_a = heatmap_a.detach().cpu()[0, 0].numpy()
+        A_orig = overlay_heatmap(A_orig, hm_a)
 
-        ab_overlay = overlay(ab_rgb, ab_mask)
-        ba_overlay = overlay(ba_rgb, ba_mask)
+    if heatmap_b is not None:
+        hm_b = heatmap_b.detach().cpu()[0, 0].numpy()
+        B_orig = overlay_heatmap(B_orig, hm_b)
 
-        row3 = torch.cat([ab_mask3, ab_overlay, ba_mask3, ba_overlay], dim=3)[0:1]
-        rows.append(row3)
+    # -----------------------------
+    # Build preview grid
+    # -----------------------------
+    row_A = np.hstack([
+        A_orig,
+        AA,
+        AB,
+        cv2.cvtColor(mask_A, cv2.COLOR_GRAY2BGR),
+        blend_A,
+    ])
 
-    # ---- 行を縦に積む（dim=2）----
-    grid = torch.cat(rows, dim=2)
+    row_B = np.hstack([
+        B_orig,
+        BB,
+        BA,
+        cv2.cvtColor(mask_B, cv2.COLOR_GRAY2BGR),
+        blend_B,
+    ])
 
-    # 保存
-    path = os.path.join(out_dir, f"preview_{step:06d}.{ext}")
-    vutils.save_image(grid, path, normalize=True, value_range=(0, 1))
+    preview = np.vstack([row_A, row_B])
+
+    # -----------------------------
+    # Draw text (step / loss)
+    # -----------------------------
+    text = f"step: {step}"
+    if loss_value is not None:
+        text += f"  loss: {loss_value:.4f}"
+
+    cv2.putText(
+        preview, text, (10, 30),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2
+    )
+
+    # -----------------------------
+    # Save (2× upscale for visibility)
+    # -----------------------------
+    preview_big = cv2.resize(preview, None, fx=2, fy=2, interpolation=cv2.INTER_NEAREST)
+
+    out_path = os.path.join(out_dir, f"preview_{step:06d}.{ext}")
+    cv2.imwrite(out_path, preview_big)
