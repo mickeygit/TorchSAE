@@ -5,15 +5,18 @@ import torch.nn as nn
 def conv_block(in_ch, out_ch):
     return nn.Sequential(
         nn.Conv2d(in_ch, out_ch, 3, padding=1),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU6(inplace=True),
+
         nn.Conv2d(out_ch, out_ch, 3, padding=1),
-        nn.LeakyReLU(0.1, inplace=True),
+        nn.BatchNorm2d(out_ch),
+        nn.ReLU6(inplace=True),
     )
 
 
 class DFEncoder(nn.Module):
     """
-    DF encoder (本家 SAEHD の DF を参考にした最小構成)
+    DF encoder (LIAE/DF 共通)
     入力: (N, 3, model_size, model_size)
     出力: latent tensor (N, ae_dims, H/16, W/16)
     """
@@ -33,6 +36,18 @@ class DFEncoder(nn.Module):
         # bottleneck
         self.to_latent = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
 
+        # initialize weights
+        self._init_weights()
+
+    # ---------------------------------------------------------
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+
+    # ---------------------------------------------------------
     def forward(self, x):
         x = self.down1(x)
         x = self.pool(x)

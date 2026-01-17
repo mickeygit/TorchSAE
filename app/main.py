@@ -1,7 +1,10 @@
 import sys
 import json
 from app.config import TrainConfig
-from app.trainer import Trainer
+
+# 分割した Trainer を読み込む
+from app.trainers.trainer_df import TrainerDF
+from app.trainers.trainer_liae import TrainerLIAE
 
 
 def load_train_config(path: str) -> TrainConfig:
@@ -29,9 +32,20 @@ def main():
     cfg.summary()
 
     # ----------------------------------------
+    # Select trainer based on model_type
+    # ----------------------------------------
+    model_type = cfg.model_type.lower()
+
+    if model_type == "df":
+        trainer = TrainerDF(cfg)
+    elif model_type == "liae":
+        trainer = TrainerLIAE(cfg)
+    else:
+        raise ValueError(f"Unknown model_type: {cfg.model_type}")
+
+    # ----------------------------------------
     # Start training
     # ----------------------------------------
-    trainer = Trainer(cfg)
     trainer.run()
 
 

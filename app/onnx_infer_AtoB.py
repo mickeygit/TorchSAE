@@ -23,24 +23,16 @@ def create_xseg_session(xseg_path):
 def run_xseg_mask(session, img, mask_size=256):
     h, w = img.shape[:2]
 
-    # XSeg 入力サイズへリサイズ
     x = cv2.resize(img, (mask_size, mask_size))
     x = x.astype(np.float32) / 255.0
+    x = np.expand_dims(x, 0)  # NHWC
 
-    # ★ NHWC のまま
-    x = np.expand_dims(x, 0)  # (1, H, W, 3)
-
-    # ★ XSeg の入力名を自動取得
     input_name = session.get_inputs()[0].name
-
-    # 推論
     mask = session.run(None, {input_name: x})[0]
 
-    # (1, H, W, 1) → (H, W)
     mask = mask.squeeze()
     mask = cv2.resize(mask, (w, h))
-    mask = np.clip(mask, 0, 1)
-    return mask
+    return np.clip(mask, 0, 1)
 
 
 # ============================================================
@@ -49,7 +41,7 @@ def run_xseg_mask(session, img, mask_size=256):
 def load_image_for_onnx_from_array(img, model_size=128):
     img = cv2.resize(img, (model_size, model_size), interpolation=cv2.INTER_AREA)
     img = img.astype(np.float32) / 255.0
-    img = np.transpose(img, (2, 0, 1))
+    img = np.transpose(img, (2, 0, 1))  # CHW
     img = np.expand_dims(img, 0)
     return img
 
@@ -82,33 +74,29 @@ def create_session(onnx_path):
 
 
 # ============================================================
-# DFL 風マージ
+# 最適化マージ（LIAE / DF 共通）
 # ============================================================
-def merge_faces(original, converted, mask, mode="color"):
-    if mode == "raw":
-        return original * (1 - mask[...,None]) + converted * mask[...,None]
+def merge_faces_optimized(original, converted, mask):
+    # 1. マスクのエッジ処理（erode → blur）
+    mask_eroded = erode_mask(mask, ksize=5)
+    mask_blur = blur_mask(mask_eroded, ksize=21)
 
-    if mode == "alpha":
-        mask_blur = blur_mask(mask)
-        return original * (1 - mask_blur[...,None]) + converted * mask_blur[...,None]
+    # 2. 色補正は “ぼかしたマスク” で行う
+    mask_soft = blur_mask(mask, ksize=31)
+    converted_adj = color_transfer_dfl(converted, original, mask_soft)
 
-    if mode == "erode":
-        mask_eroded = erode_mask(mask)
-        mask_blur = blur_mask(mask_eroded)
-        return original * (1 - mask_blur[...,None]) + converted * mask_blur[...,None]
+    # 3. 軽いガンマ補正で顔の浮きを防ぐ
+    converted_adj = np.power(converted_adj, 1.05)
 
-    if mode == "color":
-        converted_adj = color_transfer_dfl(converted, original, mask)
-        mask_blur = blur_mask(mask)
-        return original * (1 - mask_blur[...,None]) + converted_adj * mask_blur[...,None]
-
-    raise ValueError("Unknown merge mode")
+    # 4. マージ（背景は original を100%使う）
+    merged = original * (1 - mask_blur[..., None]) + converted_adj * mask_blur[..., None]
+    return merged
 
 
 # ============================================================
-# A→B 推論（XSeg + DFModel + DFL Merge）
+# A→B 推論（最適化版）
 # ============================================================
-def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128, merge_mode="color"):
+def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128):
     session, gpu_used = create_session(onnx_path)
     xseg_session = create_xseg_session(xseg_path)
 
@@ -124,8 +112,6 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
     print(f"XSeg Model       : {xseg_path}")
     print(f"Input Folder A   : {folderA}  ({len(filesA)} files)")
     print(f"Output Folder    : {out_folder}")
-    print(f"Merge Mode       : {merge_mode}")
-    print("Available Merge Modes : raw, alpha, erode, color")
     print(f"ONNX Input Size  : {model_size}×{model_size}")
     print(f"GPU Used         : {'YES' if gpu_used else 'NO'}")
     print("========================\n")
@@ -134,27 +120,25 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
 
     for idx, fnameA in enumerate(filesA):
         pathA = os.path.join(folderA, fnameA)
-
         original = cv2.cvtColor(cv2.imread(pathA), cv2.COLOR_BGR2RGB)
 
         # ① XSeg マスク生成
         mask = run_xseg_mask(xseg_session, original)
 
-        # ② DFModel 入力用にマスク済み A を作成
-        masked_A = original * mask[...,None]
-        imgA = load_image_for_onnx_from_array(masked_A, model_size)
+        # ② 推論入力は “マスク無しの A”
+        imgA = load_image_for_onnx_from_array(original, model_size)
 
-        # ③ DFModel 推論
+        # ③ TorchSAE（DF / LIAE）ONNX 推論
         inputs = {"input_a": imgA, "input_b": imgA}
         _, _, out_ab, _ = session.run(None, inputs)
 
         # ④ 出力を元解像度に戻す
-        out_ab = out_ab.squeeze(0).transpose(1,2,0)
+        out_ab = out_ab.squeeze(0).transpose(1, 2, 0)
         out_ab = cv2.resize(out_ab, (original.shape[1], original.shape[0]))
         out_ab = np.clip(out_ab, 0, 1)
 
-        # ⑤ DFL 風マージ
-        final = merge_faces(original/255.0, out_ab, mask, mode=merge_mode)
+        # ⑤ 最適化マージ
+        final = merge_faces_optimized(original / 255.0, out_ab, mask)
 
         # ⑥ 保存
         baseA = os.path.splitext(fnameA)[0]
@@ -170,16 +154,12 @@ def run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size=128
     print(f"Total Time       : {end_total - start_total:.3f} sec")
     print(f"Time per Image   : {(end_total - start_total)/len(filesA):.3f} sec")
     print(f"GPU Used         : {'YES' if gpu_used else 'NO'}")
-    print(f"Merge Mode Used  : {merge_mode}")
     print("===============================")
 
 
-# ============================================================
-# main
-# ============================================================
 def main():
     if len(sys.argv) < 5:
-        print("Usage: python3 onnx_infer_AtoB.py dfmodel.onnx xseg.onnx folderA output_folder [model_size] [merge_mode]")
+        print("Usage: python3 onnx_infer_AtoB.py model.onnx xseg.onnx folderA output_folder [model_size]")
         sys.exit(1)
 
     onnx_path = sys.argv[1]
@@ -187,9 +167,8 @@ def main():
     folderA = sys.argv[3]
     out_folder = sys.argv[4]
     model_size = int(sys.argv[5]) if len(sys.argv) >= 6 else 128
-    merge_mode = sys.argv[6] if len(sys.argv) >= 7 else "color"
 
-    run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size, merge_mode)
+    run_inference_AtoB(onnx_path, xseg_path, folderA, out_folder, model_size)
 
 
 if __name__ == "__main__":
