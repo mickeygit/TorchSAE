@@ -199,4 +199,8 @@ class LIAEModel(nn.Module):
         ab = self.decoder(B_b)
         ba = self.decoder(B_a)
 
-        return aa, bb, ab, ba
+        # ★ ここが抜けていた：mask 生成
+        mask_a = torch.sigmoid(self.mask_decoder(AB_a))
+        mask_b = torch.sigmoid(self.mask_decoder(AB_b))
+
+        return aa, bb, ab, ba, mask_a, mask_b

@@ -45,12 +45,6 @@ class TrainerLIAE(BaseTrainer):
     # One training step (landmarks 対応)
     # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
-        """
-        batch_a, batch_b: (img_tensor, landmarks_tensor)
-            img_tensor: (N, 3, H, W)
-            landmarks_tensor: (N, 68, 2)
-        """
-
         img_a, lm_a = batch_a
         img_b, lm_b = batch_b
 
@@ -60,10 +54,9 @@ class TrainerLIAE(BaseTrainer):
         lm_b = lm_b.to(self.device)
 
         with torch.cuda.amp.autocast(enabled=self.cfg.amp):
-            # LIAEModel は landmarks heatmap を内部で生成する
-            aa, bb, ab, ba = self.model(img_a, img_b, lm_a, lm_b)
+            # LIAEModel は mask も返す
+            aa, bb, ab, ba, mask_a, mask_b = self.model(img_a, img_b, lm_a, lm_b)
 
-            # loss_fn は landmarks を使う（eyes/mouth weight）
             loss_aa = self.loss_fn(aa, img_a, lm_a)
             loss_bb = self.loss_fn(bb, img_b, lm_b)
             loss_ab = self.loss_fn(ab, img_b, lm_b)
@@ -74,7 +67,6 @@ class TrainerLIAE(BaseTrainer):
         self.opt.zero_grad()
         self.scaler.scale(loss).backward()
 
-        # Gradient clipping
         if self.cfg.clip_grad > 0:
             self.scaler.unscale_(self.opt)
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.clip_grad)
@@ -82,17 +74,14 @@ class TrainerLIAE(BaseTrainer):
         self.scaler.step(self.opt)
         self.scaler.update()
 
-        return loss.item(), (aa, bb, ab, ba)
+        # mask も返す
+        return loss.item(), (aa, bb, ab, ba, mask_a, mask_b)
 
     # ---------------------------------------------------------
     # Preview hook
     # ---------------------------------------------------------
     def make_preview(self, outputs, batch_a, batch_b):
-        """
-        outputs: (aa, bb, ab, ba)
-        batch_a, batch_b: (img, lm)
-        """
-        aa, bb, ab, ba = outputs
+        aa, bb, ab, ba, mask_a, mask_b = outputs
         img_a, _ = batch_a
         img_b, _ = batch_b
 
@@ -101,6 +90,8 @@ class TrainerLIAE(BaseTrainer):
             "bb": bb.detach().cpu(),
             "ab": ab.detach().cpu(),
             "ba": ba.detach().cpu(),
+            "mask_a": mask_a.detach().cpu(),
+            "mask_b": mask_b.detach().cpu(),
             "a_orig": img_a.cpu(),
             "b_orig": img_b.cpu(),
         }

@@ -122,8 +122,8 @@ class BaseTrainer:
                     print(f"[{self.global_step}] loss={loss:.4f}")
 
                 if self.global_step % self.cfg.preview_interval == 0:
-                    aa, bb, ab, ba = outputs
-                    self._save_preview(aa, bb, ab, ba)
+                    aa, bb, ab, ba, mask_a, mask_b = outputs
+                    self._save_preview(aa, bb, ab, ba, mask_a, mask_b)
 
                 if self.global_step % self.cfg.save_interval == 0:
                     self._save_checkpoint()
@@ -136,13 +136,15 @@ class BaseTrainer:
         print("=== Training Finished ===")
 
     # ---------------------------------------------------------
-    def _save_preview(self, aa, bb, ab, ba):
+    def _save_preview(self, aa, bb, ab, ba, mask_a, mask_b):
         save_liae_preview_with_masks(
             step=self.global_step,
             aa=aa.detach().cpu(),
             bb=bb.detach().cpu(),
             ab=ab.detach().cpu(),
             ba=ba.detach().cpu(),
+            mask_a=mask_a.detach().cpu(),
+            mask_b=mask_b.detach().cpu(),
             a_orig=self.last_batch_a.cpu(),
             b_orig=self.last_batch_b.cpu(),
             out_dir="/workspace/logs/previews",
