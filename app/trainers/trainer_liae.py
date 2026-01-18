@@ -69,6 +69,7 @@ class TrainerLIAE(BaseTrainer):
                 F.l1_loss(lm_b_pred, lm_b)
             )
 
+            # total
             loss = (
                 recon_loss +
                 self.cfg.mask_loss_weight * mask_loss +
@@ -85,7 +86,15 @@ class TrainerLIAE(BaseTrainer):
         self.scaler.step(self.opt)
         self.scaler.update()
 
-        return loss.item(), {
+        # ★ 内訳を返す
+        loss_dict = {
+            "total": loss.item(),
+            "recon": recon_loss.item(),
+            "mask": mask_loss.item(),
+            "landmark": lm_loss.item(),
+        }
+
+        return loss_dict, {
             "aa": aa, "bb": bb, "ab": ab, "ba": ba,
             "mask_a_pred": mask_a_pred, "mask_b_pred": mask_b_pred,
             "lm_a_pred": lm_a_pred, "lm_b_pred": lm_b_pred,

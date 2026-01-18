@@ -5,7 +5,7 @@
   "data_a": "/workspace/data/A",
   "data_b": "/workspace/data/B",
   "save_dir": "/workspace/models",
-  "resume_path": "/workspace/models/step_12839.pth",
+  "resume_path": "/workspace/models/step_15250.pth",
   "batch_size": 8,
   "num_workers": 4,
   "lr": 8e-05,
@@ -21,8 +21,8 @@
   "d_mask_dims": 128,
   "learn_mask": true,
   "use_landmarks": true,
-  "mask_loss_weight": 0.1,
-  "landmark_loss_weight": 0.01,
+  "mask_loss_weight": 2,
+  "landmark_loss_weight": 0.5,
   "preview_interval": 300,
   "save_interval": 500
 }

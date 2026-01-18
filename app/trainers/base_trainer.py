@@ -28,7 +28,7 @@ class BaseTrainer:
         """
         1 step 分の学習を行う。
         戻り値:
-          loss_value, outputs
+          loss_dict, outputs
         """
         raise NotImplementedError
 
@@ -69,7 +69,7 @@ class BaseTrainer:
         if "optimizer" in state:
             try:
                 self.opt.load_state_dict(state["optimizer"])
-            except Exception as e:
+            except Exception:
                 print("[Warn] Optimizer state mismatch. Skipping optimizer state.")
 
         # step は引き継ぐ
@@ -141,12 +141,20 @@ class BaseTrainer:
                     it_b = iter(dl_b)
                     batch_b = next(it_b)
 
-                loss, outputs = self.train_step(batch_a, batch_b)
+                # ★ ここを loss_dict 受け取りに変更
+                loss_dict, outputs = self.train_step(batch_a, batch_b)
                 self.global_step += 1
 
                 if self.global_step % 50 == 0:
                     elapsed = time.time() - self.start_time
-                    print(f"[Step {self.global_step}] loss={loss:.4f}  elapsed={elapsed/60:.1f} min")
+                    print(
+                        f"[Step {self.global_step}] "
+                        f"total={loss_dict['total']:.4f} "
+                        f"recon={loss_dict['recon']:.4f} "
+                        f"mask={loss_dict['mask']:.4f} "
+                        f"lm={loss_dict['landmark']:.4f}  "
+                        f"elapsed={elapsed/60:.1f} min"
+                    )
 
                 if self.global_step % self.cfg.save_interval == 0:
                     self._save_checkpoint()
@@ -168,8 +176,9 @@ class BaseTrainer:
                         ab = preview["ab"][0]
                         ba = preview["ba"][0]
 
-                        mask_a = torch.sigmoid(preview["mask_a"][0])  # [1,128,128]
-                        mask_b = torch.sigmoid(preview["mask_b"][0])  # [1,128,128]
+                        # ★ ここは make_preview 側で sigmoid 済み前提ならそのまま使う
+                        mask_a = preview["mask_a"][0]      # [1,128,128]
+                        mask_b = preview["mask_b"][0]      # [1,128,128]
 
                         # --- mask を RGB に変換 ---
                         mask_a_rgb = mask_a.repeat(3, 1, 1)
@@ -188,7 +197,6 @@ class BaseTrainer:
                             value_range=(0, 1),
                         )
 
-                        # 保存
                         preview_path = os.path.join(self.save_dir, f"preview_{self.global_step}.jpg")
                         vutils.save_image(grid, preview_path)
                         print(f"[Preview] Saved: {preview_path}")
