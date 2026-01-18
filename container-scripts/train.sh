@@ -44,7 +44,7 @@ SCRIPT=/workspace/app/main.py
 
 echo "[train.sh] Using config: $CONFIG_PATH"
 
-LATEST_CKPT=$(ls -1 /workspace/models/resume_step_*.pth 2>/dev/null | sort -V | tail -n 1)
+LATEST_CKPT=$(ls -1 /workspace/models/step_*.pth 2>/dev/null | sort -V | tail -n 1)
 
 if [ -n "$LATEST_CKPT" ]; then
 	echo "[train.sh] Latest checkpoint detected: $LATEST_CKPT"

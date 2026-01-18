@@ -137,17 +137,36 @@ class Trainer:
         print("=== Training Finished ===")
 
     def _save_preview(self, aa, bb, ab, ba):
-        save_preview_grid(
-            step=self.global_step,
-            aa=aa.detach().cpu(),
-            bb=bb.detach().cpu(),
-            ab=ab.detach().cpu(),
-            ba=ba.detach().cpu(),
-            a_orig=self.last_batch_a.cpu(),
-            b_orig=self.last_batch_b.cpu(),
-            out_dir="/workspace/logs/previews",
-            ext="jpg"
+        # last_batch_a / last_batch_b は (B,3,H,W)
+        img_a = self.last_batch_a.to(self.device)
+        img_b = self.last_batch_b.to(self.device)
+
+        # モデル出力
+        aa = aa.to(self.device)
+        bb = bb.to(self.device)
+        ab = ab.to(self.device)
+
+        # ★ DFModel には mask が無いので「ab の差分から疑似 mask」を作る
+        #   → LIAE/SAEHD なら pred_dst_dstm を使う
+        mask_b = torch.mean(torch.abs(bb - img_b), dim=1, keepdim=True)
+        mask_b = (mask_b / mask_b.max()).clamp(0,1)
+
+        preview = make_saehd_style_preview(
+            img_a, img_b,
+            aa, bb,
+            ab,
+            mask_b
         )
+
+        # 1枚だけ保存
+        p = preview[0].detach().cpu().permute(1,2,0).numpy()
+        p = (p * 255).clip(0,255).astype("uint8")
+
+        cv2.imwrite(
+            f"/workspace/logs/previews/preview_{self.global_step:06d}.jpg",
+            cv2.cvtColor(p, cv2.COLOR_RGB2BGR)
+        )
+
 
     def _save_checkpoint(self):
         state = {
