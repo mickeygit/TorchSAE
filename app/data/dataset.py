@@ -117,9 +117,14 @@ class FaceDataset(Dataset):
         # xseg mask (H,W,1)
         mask = jpg.get_xseg_mask().astype(np.float32)
 
-        # mask を model_size にリサイズ
-        mask = Image.fromarray((mask[:, :, 0] * 255).astype(np.uint8))
-        mask = mask.resize((self.size, self.size), Image.BILINEAR)
+        # ★ 0/1 に2値化してから uint8 に変換
+        mask = (mask[:, :, 0] > 0.5).astype(np.uint8) * 255
+
+        # ★ NEAREST でリサイズ（補間しない）
+        mask = Image.fromarray(mask)
+        mask = mask.resize((self.size, self.size), Image.NEAREST)
+
+        # ★ float に戻す（0.0 or 1.0）
         mask = np.array(mask).astype(np.float32) / 255.0
         mask = mask[None, :, :]  # (1,H,W)
 
