@@ -88,30 +88,62 @@ class BaseTrainer:
     # checkpoint 保存 / ロード
     # ---------------------------------------------------------
     def _save_checkpoint(self):
+        # 保存する state
         state = {
             "step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.opt.state_dict(),
         }
-        path = os.path.join(self.save_dir, f"step_{self.global_step}.pth")
+
+        # ★ 本家風＋構造情報入りのファイル名を生成
+        model_type = getattr(self.cfg, "model_type", "model").upper()
+        model_size = getattr(self.cfg, "model_size", 128)
+        ae_dims = getattr(self.cfg, "ae_dims", 512)
+        d_dims = getattr(self.cfg, "d_dims", 128)
+        d_mask_dims = getattr(self.cfg, "d_mask_dims", 128)
+        target_steps = getattr(self.cfg, "target_steps", None)
+
+        filename = (
+            f"{model_type}_{model_size}_ae{ae_dims}_d{d_dims}_"
+            f"mask{d_mask_dims}_step{self.global_step}.pth"
+        )
+        path = os.path.join(self.save_dir, filename)
+
+        # 保存
         torch.save(state, path)
         print(f"[Save] Saved checkpoint: {path}")
 
-        # ★ 古い checkpoint を削除（最新だけ残す）
+        # ★ 古い checkpoint を削除（最新2個だけ残す）
         ckpts = sorted(
             [f for f in os.listdir(self.save_dir) if f.endswith(".pth")],
             key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
         )
 
-        # 最新2個だけ残す
-        if len(ckpts) > 1:
-            old_ckpts = ckpts[:-3]
+        if len(ckpts) > 2:
+            old_ckpts = ckpts[:-2]
             for f in old_ckpts:
                 try:
                     os.remove(os.path.join(self.save_dir, f))
                     print(f"[Cleanup] Removed old checkpoint: {f}")
                 except Exception as e:
                     print(f"[Cleanup] Failed to remove {f}: {e}")
+
+
+        # ★ preview の自動削除（最新5個だけ残す）
+        previews = sorted(
+            [f for f in os.listdir(self.save_dir) if f.startswith("preview_") and f.endswith(".jpg")],
+            key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
+        )
+
+        if len(previews) > 5:
+            old_previews = previews[:-5]
+            for f in old_previews:
+                try:
+                    os.remove(os.path.join(self.save_dir, f))
+                    print(f"[Cleanup] Removed old preview: {f}")
+                except Exception as e:
+                    print(f"[Cleanup] Failed to remove preview {f}: {e}")
+
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -191,6 +223,12 @@ class BaseTrainer:
 
         try:
             while True:
+
+                # ★ ここを追加
+                if getattr(self, "stop_training", False):
+                    print("[Target] Training stopped by target_steps.")
+                    break
+
                 try:
                     batch_a = next(it_a)
                 except StopIteration:
@@ -203,9 +241,15 @@ class BaseTrainer:
                     it_b = iter(dl_b)
                     batch_b = next(it_b)
 
-                # ★ ここを loss_dict 受け取りに変更
                 loss_dict, outputs = self.train_step(batch_a, batch_b)
                 self.global_step += 1
+
+                target_steps = getattr(self.cfg, "target_steps", None)
+                if target_steps is not None and self.global_step >= target_steps:
+                    print(f"[Target] Reached target steps ({target_steps}). Stopping training.")
+                    self.stop_training = True
+                    break
+
 
                 if self.global_step % 50 == 0:
                     elapsed = time.time() - self.start_time

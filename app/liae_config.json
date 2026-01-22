@@ -5,7 +5,7 @@
   "data_a": "/workspace/data/A",
   "data_b": "/workspace/data/B",
   "save_dir": "/workspace/models",
-  "resume_path": "/workspace/models/step_3000.pth",
+  "resume_path": "/workspace/models/LIAE_128_ae512_d128_mask128_step6500.pth",
   "batch_size": 8,
   "num_workers": 4,
   "lr": 5e-05,
@@ -24,5 +24,6 @@
   "mask_loss_weight": 0.2,
   "landmark_loss_weight": 0.5,
   "preview_interval": 300,
-  "save_interval": 500
+  "save_interval": 1000,
+  "target_steps": 15100
 }
