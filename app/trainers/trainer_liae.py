@@ -69,10 +69,14 @@ class TrainerLIAE(BaseTrainer):
                 F.l1_loss(lm_b_pred, lm_b)
             )
 
+            # --- mask loss weight の自動減衰（後期安定化） ---
+            # 5000 step くらいで 50% に減衰する
+            mask_w = self.cfg.mask_loss_weight * (0.5 + 0.5 * torch.exp(-torch.tensor(self.global_step / 5000)))
+
             # total
             loss = (
                 recon_loss +
-                self.cfg.mask_loss_weight * mask_loss +
+                mask_w * mask_loss +
                 self.cfg.landmark_loss_weight * lm_loss
             )
 
