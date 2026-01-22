@@ -69,9 +69,14 @@ class TrainerLIAE(BaseTrainer):
                 F.l1_loss(lm_b_pred, lm_b)
             )
 
+            # --- mask loss weight の自動減衰（後期安定化） ---
+            # 5000 step くらいで 50% に減衰する
+            mask_w = self.cfg.mask_loss_weight * (0.5 + 0.5 * torch.exp(-torch.tensor(self.global_step / 5000)))
+
+            # total
             loss = (
                 recon_loss +
-                self.cfg.mask_loss_weight * mask_loss +
+                mask_w * mask_loss +
                 self.cfg.landmark_loss_weight * lm_loss
             )
 
@@ -85,25 +90,76 @@ class TrainerLIAE(BaseTrainer):
         self.scaler.step(self.opt)
         self.scaler.update()
 
-        return loss.item(), {
+        # ★ 内訳を返す
+        loss_dict = {
+            "total": loss.item(),
+            "recon": recon_loss.item(),
+            "mask": mask_loss.item(),
+            "landmark": lm_loss.item(),
+        }
+
+        return loss_dict, {
             "aa": aa, "bb": bb, "ab": ab, "ba": ba,
             "mask_a_pred": mask_a_pred, "mask_b_pred": mask_b_pred,
             "lm_a_pred": lm_a_pred, "lm_b_pred": lm_b_pred,
         }
-
     def make_preview(self, outputs, batch_a, batch_b):
-        img_a, _, _ = batch_a
-        img_b, _, _ = batch_b
+        import torch
+
+        # --- 値域補正（完全版） ---
+        def to_float01(x):
+            x = x.float()
+            if x.min() < 0:          # -1〜1 の場合
+                x = (x + 1) / 2
+            if x.max() > 1.5:        # 0〜255 の float の場合
+                x = x / 255.0
+            return x.clamp(0.0, 1.0)
+
+        # --- landmark 描画 ---
+        def draw_landmarks_tensor(img, landmarks, color=(1.0, 1.0, 1.0)):
+            out = img.clone()
+            c = torch.tensor(color).view(3,1,1)
+            for (x, y) in landmarks:
+                x, y = int(x), int(y)
+                if 1 <= x < out.shape[2]-1 and 1 <= y < out.shape[1]-1:
+                    out[:, y-1:y+2, x-1:x+2] = c
+            return out
+
+        # --- 元画像と landmark ---
+        img_a, lm_a, _ = batch_a
+        img_b, lm_b, _ = batch_b
+
+        lm_a = lm_a[0].cpu().numpy()
+        lm_b = lm_b[0].cpu().numpy()
+
+        # --- モデル出力（aa / ab / bb / ba） ---
+        aa = to_float01(outputs["aa"][0].detach().cpu())
+        bb = to_float01(outputs["bb"][0].detach().cpu())
+        ab = to_float01(outputs["ab"][0].detach().cpu())
+        ba = to_float01(outputs["ba"][0].detach().cpu())
+
+        # --- 元画像に landmark を描画 ---
+        a_orig_lm = to_float01(draw_landmarks_tensor(img_a[0].cpu(), lm_a))
+        b_orig_lm = to_float01(draw_landmarks_tensor(img_b[0].cpu(), lm_b))
+
+        # --- mask（sigmoid → 値域補正） ---
+        mask_a = to_float01(torch.sigmoid(outputs["mask_a_pred"][0]).detach().cpu())
+        mask_b = to_float01(torch.sigmoid(outputs["mask_b_pred"][0]).detach().cpu())
+
+        if mask_a.ndim == 2:
+            mask_a = mask_a.unsqueeze(0)
+        if mask_b.ndim == 2:
+            mask_b = mask_b.unsqueeze(0)
 
         return {
-            "aa": outputs["aa"].detach().cpu(),
-            "bb": outputs["bb"].detach().cpu(),
-            "ab": outputs["ab"].detach().cpu(),
-            "ba": outputs["ba"].detach().cpu(),
-            "mask_a": torch.sigmoid(outputs["mask_a_pred"]).detach().cpu(),
-            "mask_b": torch.sigmoid(outputs["mask_b_pred"]).detach().cpu(),
-            "a_orig": img_a.cpu(),
-            "b_orig": img_b.cpu(),
+            "aa": aa,
+            "bb": bb,
+            "ab": ab,
+            "ba": ba,
+            "mask_a": mask_a,
+            "mask_b": mask_b,
+            "a_orig": a_orig_lm,
+            "b_orig": b_orig_lm,
         }
 
     @torch.no_grad()

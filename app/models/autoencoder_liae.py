@@ -125,7 +125,14 @@ class LIAEMaskDecoder(nn.Module):
         self.dec = LIAEDecoder(out_ch=1, base_ch=base_ch, use_tanh=False)
 
     def forward(self, x):
-        return self.dec(x)
+        mask = self.dec(x)          # logits（0〜∞）
+        mask = torch.sigmoid(mask)  # 0〜1
+
+        # ★ 後期安定化パッチ（本家 SAEHD と同じ）
+        mask = mask * 0.98 + 0.01               # saturate clamp（0/1 張り付き防止）
+        mask = F.avg_pool2d(mask, 3, 1, 1)      # blur（勾配安定化）
+
+        return mask
 
 
 # ============================================================

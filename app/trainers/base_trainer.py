@@ -28,28 +28,122 @@ class BaseTrainer:
         """
         1 step 分の学習を行う。
         戻り値:
-          loss_value, outputs
+          loss_dict, outputs
         """
         raise NotImplementedError
 
-    def make_preview(self, outputs, batch_a, batch_b):
-        """
-        プレビュー用の dict を返す。
-        """
-        raise NotImplementedError
+    @torch.no_grad()
+    def _save_preview(self, preview_dict, save_path):
+        import torchvision.utils as vutils
+        import torch
+
+        for k, v in preview_dict.items():
+            print(k, v.min().item(), v.max().item())
+
+
+        # 値域と dtype を完全補正
+        def to_float01(x):
+            if x.dtype == torch.uint8:
+                x = x.float() / 255.0
+            else:
+                x = x.float()
+                if x.max() > 1.5:  # 0〜255 の float の可能性
+                    x = x / 255.0
+            return x.clamp(0.0, 1.0)
+
+        # --- 画像を取り出して安全化 ---
+        a_orig = to_float01(preview_dict["a_orig"])
+        b_orig = to_float01(preview_dict["b_orig"])
+        aa     = to_float01(preview_dict["aa"])
+        bb     = to_float01(preview_dict["bb"])
+        ab     = to_float01(preview_dict["ab"])
+        ba     = to_float01(preview_dict["ba"])
+
+        mask_a = to_float01(preview_dict["mask_a"])
+        mask_b = to_float01(preview_dict["mask_b"])
+
+        # mask を [1,H,W] に揃える
+        if mask_a.ndim == 2:
+            mask_a = mask_a.unsqueeze(0)
+        if mask_b.ndim == 2:
+            mask_b = mask_b.unsqueeze(0)
+
+        # RGB に変換
+        mask_a_rgb = mask_a.repeat(3, 1, 1)
+        mask_b_rgb = mask_b.repeat(3, 1, 1)
+
+        # --- グリッド作成（normalize=False が決定打） ---
+        grid = vutils.make_grid(
+            [
+                a_orig, aa, ab, mask_a_rgb,
+                b_orig, bb, ba, mask_b_rgb,
+            ],
+            nrow=4,
+            normalize=False,
+        )
+
+        vutils.save_image(grid, save_path)
 
     # ---------------------------------------------------------
     # checkpoint 保存 / ロード
     # ---------------------------------------------------------
     def _save_checkpoint(self):
+        # 保存する state
         state = {
             "step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.opt.state_dict(),
         }
-        path = os.path.join(self.save_dir, f"step_{self.global_step}.pth")
+
+        # ★ 本家風＋構造情報入りのファイル名を生成
+        model_type = getattr(self.cfg, "model_type", "model").upper()
+        model_size = getattr(self.cfg, "model_size", 128)
+        ae_dims = getattr(self.cfg, "ae_dims", 512)
+        d_dims = getattr(self.cfg, "d_dims", 128)
+        d_mask_dims = getattr(self.cfg, "d_mask_dims", 128)
+        target_steps = getattr(self.cfg, "target_steps", None)
+
+        filename = (
+            f"{model_type}_{model_size}_ae{ae_dims}_d{d_dims}_"
+            f"mask{d_mask_dims}_step{self.global_step}.pth"
+        )
+        path = os.path.join(self.save_dir, filename)
+
+        # 保存
         torch.save(state, path)
         print(f"[Save] Saved checkpoint: {path}")
+
+        # ★ 古い checkpoint を削除（最新2個だけ残す）
+        ckpts = sorted(
+            [f for f in os.listdir(self.save_dir) if f.endswith(".pth")],
+            key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
+        )
+
+        if len(ckpts) > 2:
+            old_ckpts = ckpts[:-2]
+            for f in old_ckpts:
+                try:
+                    os.remove(os.path.join(self.save_dir, f))
+                    print(f"[Cleanup] Removed old checkpoint: {f}")
+                except Exception as e:
+                    print(f"[Cleanup] Failed to remove {f}: {e}")
+
+
+        # ★ preview の自動削除（最新5個だけ残す）
+        previews = sorted(
+            [f for f in os.listdir(self.save_dir) if f.startswith("preview_") and f.endswith(".jpg")],
+            key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
+        )
+
+        if len(previews) > 5:
+            old_previews = previews[:-5]
+            for f in old_previews:
+                try:
+                    os.remove(os.path.join(self.save_dir, f))
+                    print(f"[Cleanup] Removed old preview: {f}")
+                except Exception as e:
+                    print(f"[Cleanup] Failed to remove preview {f}: {e}")
+
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -69,7 +163,7 @@ class BaseTrainer:
         if "optimizer" in state:
             try:
                 self.opt.load_state_dict(state["optimizer"])
-            except Exception as e:
+            except Exception:
                 print("[Warn] Optimizer state mismatch. Skipping optimizer state.")
 
         # step は引き継ぐ
@@ -129,6 +223,12 @@ class BaseTrainer:
 
         try:
             while True:
+
+                # ★ ここを追加
+                if getattr(self, "stop_training", False):
+                    print("[Target] Training stopped by target_steps.")
+                    break
+
                 try:
                     batch_a = next(it_a)
                 except StopIteration:
@@ -141,12 +241,26 @@ class BaseTrainer:
                     it_b = iter(dl_b)
                     batch_b = next(it_b)
 
-                loss, outputs = self.train_step(batch_a, batch_b)
+                loss_dict, outputs = self.train_step(batch_a, batch_b)
                 self.global_step += 1
+
+                target_steps = getattr(self.cfg, "target_steps", None)
+                if target_steps is not None and self.global_step >= target_steps:
+                    print(f"[Target] Reached target steps ({target_steps}). Stopping training.")
+                    self.stop_training = True
+                    break
+
 
                 if self.global_step % 50 == 0:
                     elapsed = time.time() - self.start_time
-                    print(f"[Step {self.global_step}] loss={loss:.4f}  elapsed={elapsed/60:.1f} min")
+                    print(
+                        f"[Step {self.global_step}] "
+                        f"total={loss_dict['total']:.4f} "
+                        f"recon={loss_dict['recon']:.4f} "
+                        f"mask={loss_dict['mask']:.4f} "
+                        f"lm={loss_dict['landmark']:.4f}  "
+                        f"elapsed={elapsed/60:.1f} min"
+                    )
 
                 if self.global_step % self.cfg.save_interval == 0:
                     self._save_checkpoint()
@@ -160,20 +274,22 @@ class BaseTrainer:
                         import torch
 
                         # --- 画像取り出し ---
-                        a_orig = preview["a_orig"][0]      # [3,128,128]
-                        b_orig = preview["b_orig"][0]      # [3,128,128]
+                        a_orig = preview["a_orig"]      # [3,128,128]
+                        b_orig = preview["b_orig"]      # [3,128,128]
 
-                        aa = preview["aa"][0]
-                        bb = preview["bb"][0]
-                        ab = preview["ab"][0]
-                        ba = preview["ba"][0]
+                        aa = preview["aa"]
+                        bb = preview["bb"]
+                        ab = preview["ab"]
+                        ba = preview["ba"]
 
-                        mask_a = torch.sigmoid(preview["mask_a"][0])  # [1,128,128]
-                        mask_b = torch.sigmoid(preview["mask_b"][0])  # [1,128,128]
+                        # ★ ここは make_preview 側で sigmoid 済み前提ならそのまま使う
+                        mask_a = preview["mask_a"]      # [1,128,128]
+                        mask_b = preview["mask_b"]      # [1,128,128]
 
                         # --- mask を RGB に変換 ---
                         mask_a_rgb = mask_a.repeat(3, 1, 1)
                         mask_b_rgb = mask_b.repeat(3, 1, 1)
+
 
                         # --- SAEHD 本家と同じ並び ---
                         # A_orig | AA | AB | mask_A
@@ -188,7 +304,6 @@ class BaseTrainer:
                             value_range=(0, 1),
                         )
 
-                        # 保存
                         preview_path = os.path.join(self.save_dir, f"preview_{self.global_step}.jpg")
                         vutils.save_image(grid, preview_path)
                         print(f"[Preview] Saved: {preview_path}")

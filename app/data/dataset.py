@@ -12,17 +12,12 @@ from app.utils.DFLJPG import DFLJPG
 class FaceDataset(Dataset):
     """
     TorchSAE 用 FaceDataset（DFLJPG メタ対応版）
-    - DFLJPG の APP15 に埋め込まれた
-        ・画像
-        ・landmarks (68,2)
-        ・xseg_mask (H,W,1)
-      が両方そろっているファイルだけを学習に使う
     """
 
     def __init__(self, root_dir, cfg):
         self.root_dir = root_dir
         self.cfg = cfg
-        self.size = cfg.model_size
+        self.size = cfg.model_size  # ★ モデル解像度（128/256/384）
 
         exts = [".jpg", ".jpeg", ".png", ".bmp", ".webp"]
         all_files = [
@@ -40,11 +35,9 @@ class FaceDataset(Dataset):
             lms = jpg.get_landmarks()
             mask = jpg.get_xseg_mask()
 
-            # ★ landmarks と xseg が両方そろっているものだけ採用
             if lms is None or mask is None:
                 continue
 
-            # landmarks shape check
             if lms.shape != (68, 2):
                 continue
 
@@ -97,7 +90,6 @@ class FaceDataset(Dataset):
     # ============================================================
     def __getitem__(self, idx):
         path = self.files[idx]
-
         jpg = DFLJPG.load(path)
 
         # 画像
@@ -111,20 +103,29 @@ class FaceDataset(Dataset):
         tensor = TF.to_tensor(img).float()
         tensor = self._random_noise(tensor)
 
-        # landmarks
+        # ============================================================
+        # ★ landmarks（元画像座標 → model_size 座標へスケール変換）
+        # ============================================================
         landmarks = jpg.get_landmarks().astype(np.float32)
 
-        # xseg mask (H,W,1)
+        # 元画像サイズ（DFLJPG は通常 512×512）
+        orig_h, orig_w = jpg.get_img().shape[:2]
+
+        scale_x = self.size / orig_w
+        scale_y = self.size / orig_h
+
+        landmarks[:, 0] *= scale_x
+        landmarks[:, 1] *= scale_y
+
+        # ============================================================
+        # xseg mask
+        # ============================================================
         mask = jpg.get_xseg_mask().astype(np.float32)
 
-        # ★ 0/1 に2値化してから uint8 に変換
         mask = (mask[:, :, 0] > 0.5).astype(np.uint8) * 255
-
-        # ★ NEAREST でリサイズ（補間しない）
         mask = Image.fromarray(mask)
         mask = mask.resize((self.size, self.size), Image.NEAREST)
 
-        # ★ float に戻す（0.0 or 1.0）
         mask = np.array(mask).astype(np.float32) / 255.0
         mask = mask[None, :, :]  # (1,H,W)
 
