@@ -32,11 +32,57 @@ class BaseTrainer:
         """
         raise NotImplementedError
 
-    def make_preview(self, outputs, batch_a, batch_b):
-        """
-        プレビュー用の dict を返す。
-        """
-        raise NotImplementedError
+    @torch.no_grad()
+    def _save_preview(self, preview_dict, save_path):
+        import torchvision.utils as vutils
+        import torch
+
+        for k, v in preview_dict.items():
+            print(k, v.min().item(), v.max().item())
+
+
+        # 値域と dtype を完全補正
+        def to_float01(x):
+            if x.dtype == torch.uint8:
+                x = x.float() / 255.0
+            else:
+                x = x.float()
+                if x.max() > 1.5:  # 0〜255 の float の可能性
+                    x = x / 255.0
+            return x.clamp(0.0, 1.0)
+
+        # --- 画像を取り出して安全化 ---
+        a_orig = to_float01(preview_dict["a_orig"])
+        b_orig = to_float01(preview_dict["b_orig"])
+        aa     = to_float01(preview_dict["aa"])
+        bb     = to_float01(preview_dict["bb"])
+        ab     = to_float01(preview_dict["ab"])
+        ba     = to_float01(preview_dict["ba"])
+
+        mask_a = to_float01(preview_dict["mask_a"])
+        mask_b = to_float01(preview_dict["mask_b"])
+
+        # mask を [1,H,W] に揃える
+        if mask_a.ndim == 2:
+            mask_a = mask_a.unsqueeze(0)
+        if mask_b.ndim == 2:
+            mask_b = mask_b.unsqueeze(0)
+
+        # RGB に変換
+        mask_a_rgb = mask_a.repeat(3, 1, 1)
+        mask_b_rgb = mask_b.repeat(3, 1, 1)
+
+        # --- グリッド作成（normalize=False が決定打） ---
+        grid = vutils.make_grid(
+            [
+                a_orig, aa, ab, mask_a_rgb,
+                b_orig, bb, ba, mask_b_rgb,
+            ],
+            nrow=4,
+            normalize=False,
+        )
+
+        vutils.save_image(grid, save_path)
 
     # ---------------------------------------------------------
     # checkpoint 保存 / ロード
@@ -50,6 +96,22 @@ class BaseTrainer:
         path = os.path.join(self.save_dir, f"step_{self.global_step}.pth")
         torch.save(state, path)
         print(f"[Save] Saved checkpoint: {path}")
+
+        # ★ 古い checkpoint を削除（最新だけ残す）
+        ckpts = sorted(
+            [f for f in os.listdir(self.save_dir) if f.endswith(".pth")],
+            key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
+        )
+
+        # 最新2個だけ残す
+        if len(ckpts) > 1:
+            old_ckpts = ckpts[:-3]
+            for f in old_ckpts:
+                try:
+                    os.remove(os.path.join(self.save_dir, f))
+                    print(f"[Cleanup] Removed old checkpoint: {f}")
+                except Exception as e:
+                    print(f"[Cleanup] Failed to remove {f}: {e}")
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -168,21 +230,22 @@ class BaseTrainer:
                         import torch
 
                         # --- 画像取り出し ---
-                        a_orig = preview["a_orig"][0]      # [3,128,128]
-                        b_orig = preview["b_orig"][0]      # [3,128,128]
+                        a_orig = preview["a_orig"]      # [3,128,128]
+                        b_orig = preview["b_orig"]      # [3,128,128]
 
-                        aa = preview["aa"][0]
-                        bb = preview["bb"][0]
-                        ab = preview["ab"][0]
-                        ba = preview["ba"][0]
+                        aa = preview["aa"]
+                        bb = preview["bb"]
+                        ab = preview["ab"]
+                        ba = preview["ba"]
 
                         # ★ ここは make_preview 側で sigmoid 済み前提ならそのまま使う
-                        mask_a = preview["mask_a"][0]      # [1,128,128]
-                        mask_b = preview["mask_b"][0]      # [1,128,128]
+                        mask_a = preview["mask_a"]      # [1,128,128]
+                        mask_b = preview["mask_b"]      # [1,128,128]
 
                         # --- mask を RGB に変換 ---
                         mask_a_rgb = mask_a.repeat(3, 1, 1)
                         mask_b_rgb = mask_b.repeat(3, 1, 1)
+
 
                         # --- SAEHD 本家と同じ並び ---
                         # A_orig | AA | AB | mask_A
