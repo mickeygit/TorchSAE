@@ -30,7 +30,84 @@ class ResidualBlock(nn.Module):
 
 
 # ============================================================
-# DF-style encoder（residual + sharpen 強化）
+# PixelShuffle-based UpBlock
+# ============================================================
+
+class PSUpBlock(nn.Module):
+    def __init__(self, in_ch, out_ch):
+        super().__init__()
+        # in_ch -> 4*out_ch → PixelShuffle(2) → out_ch
+        self.conv_ps = nn.Conv2d(in_ch, out_ch * 4, 3, padding=1)
+        self.ps = nn.PixelShuffle(2)
+        self.block = nn.Sequential(
+            nn.Conv2d(out_ch, out_ch, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(out_ch),
+        )
+
+    def forward(self, x):
+        x = self.conv_ps(x)
+        x = self.ps(x)
+        x = self.block(x)
+        return x
+
+
+# ============================================================
+# Decoder / MaskDecoder（PixelShuffle + Residual）
+# ============================================================
+class Decoder(nn.Module):
+    def __init__(self, d_dims=768):
+        super().__init__()
+        ch = 64
+
+        self.up1 = PSUpBlock(d_dims, ch * 8)
+        self.up2 = PSUpBlock(ch * 8, ch * 4)
+        self.up3 = PSUpBlock(ch * 4, ch * 2)
+        self.up4 = PSUpBlock(ch * 2, ch)
+
+        # 出力側のシャープさ強化（白かすみ軽減版）
+        self.out_block = nn.Sequential(
+            nn.Conv2d(ch, ch, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(ch, ch, 1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(ch, 3, 3, padding=1, bias=False),  # ★ bias を切る
+        )
+
+    def forward(self, x):
+        x = self.up1(x)
+        x = self.up2(x)
+        x = self.up3(x)
+        x = self.up4(x)
+        return self.out_block(x)
+
+
+class MaskDecoder(nn.Module):
+    def __init__(self, d_mask_dims=768):
+        super().__init__()
+        ch = 64
+
+        self.up1 = PSUpBlock(d_mask_dims, ch * 8)
+        self.up2 = PSUpBlock(ch * 8, ch * 4)
+        self.up3 = PSUpBlock(ch * 4, ch * 2)
+        self.up4 = PSUpBlock(ch * 2, ch)
+
+        self.out_block = nn.Sequential(
+            nn.Conv2d(ch, ch, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(ch, 1, 3, padding=1),
+        )
+
+    def forward(self, x):
+        x = self.up1(x)
+        x = self.up2(x)
+        x = self.up3(x)
+        x = self.up4(x)
+        return self.out_block(x)
+
+
+# ============================================================
+# DF-style encoder（dual latent, residual + sharpen 強化）
 # ============================================================
 
 class DFEncoder(nn.Module):
@@ -59,7 +136,14 @@ class DFEncoder(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
         )
 
-        self.to_latent = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
+        # dual latent
+        self.to_exp = nn.Sequential(
+            nn.Conv2d(ch * 8, ae_dims, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+            nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
+            nn.LeakyReLU(0.1, inplace=True),
+        )
+        self.to_id  = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
 
     def forward(self, x):
         x = self.down1(x)
@@ -79,8 +163,10 @@ class DFEncoder(nn.Module):
 
         x = self.reduce(x)
         x = self.sharpen(x)
-        z = self.to_latent(x)
-        return z  # (N, ae_dims, 16,16)
+
+        z_exp = self.to_exp(x)
+        z_id  = self.to_id(x)
+        return z_exp, z_id
 
 
 # ============================================================
@@ -99,94 +185,16 @@ class UniformDistribution(nn.Module):
 
 
 # ============================================================
-# PixelShuffle-based UpBlock
-# ============================================================
-
-class PSUpBlock(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        # in_ch -> 4*out_ch → PixelShuffle(2) → out_ch
-        self.conv_ps = nn.Conv2d(in_ch, out_ch * 4, 3, padding=1)
-        self.ps = nn.PixelShuffle(2)
-        self.block = nn.Sequential(
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            ResidualBlock(out_ch),
-        )
-
-    def forward(self, x):
-        x = self.conv_ps(x)
-        x = self.ps(x)
-        x = self.block(x)
-        return x
-
-
-# ============================================================
-# Decoder / MaskDecoder（PixelShuffle + Residual）
-# ============================================================
-
-class Decoder(nn.Module):
-    def __init__(self, d_dims=768):
-        super().__init__()
-        ch = 64
-
-        self.up1 = PSUpBlock(d_dims, ch * 8)
-        self.up2 = PSUpBlock(ch * 8, ch * 4)
-        self.up3 = PSUpBlock(ch * 4, ch * 2)
-        self.up4 = PSUpBlock(ch * 2, ch)
-
-        # 出力側のシャープさ強化
-        self.out_block = nn.Sequential(
-            nn.Conv2d(ch, ch, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, ch, 1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 3, 3, padding=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        x = self.up1(x)
-        x = self.up2(x)
-        x = self.up3(x)
-        x = self.up4(x)
-        return self.out_block(x)
-
-
-class MaskDecoder(nn.Module):
-    def __init__(self, d_mask_dims=768):
-        super().__init__()
-        ch = 64
-
-        self.up1 = PSUpBlock(d_mask_dims, ch * 8)
-        self.up2 = PSUpBlock(ch * 8, ch * 4)
-        self.up3 = PSUpBlock(ch * 4, ch * 2)
-        self.up4 = PSUpBlock(ch * 2, ch)
-
-        self.out_block = nn.Sequential(
-            nn.Conv2d(ch, ch, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 1, 3, padding=1),
-            nn.Sigmoid(),
-        )
-
-    def forward(self, x):
-        x = self.up1(x)
-        x = self.up2(x)
-        x = self.up3(x)
-        x = self.up4(x)
-        return self.out_block(x)
-
-
-# ============================================================
 # Landmark head
 # ============================================================
 
 class LandmarkHead(nn.Module):
     def __init__(self, ae_dims=768):
         super().__init__()
+        in_ch = ae_dims * 2  # ★ z_id + z_exp を想定
+
         self.net = nn.Sequential(
-            nn.Conv2d(ae_dims, 256, 3, padding=1),
+            nn.Conv2d(in_ch, 256, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(256, 136, 1),
         )
@@ -199,7 +207,7 @@ class LandmarkHead(nn.Module):
 
 
 # ============================================================
-# LIAE_UD_256（軽量強化版）
+# LIAE_UD_256（dual latent 軽量強化版）
 # ============================================================
 
 class LIAE_UD_256(nn.Module):
@@ -207,6 +215,7 @@ class LIAE_UD_256(nn.Module):
         super().__init__()
 
         self.encoder = DFEncoder(e_dims=e_dims, ae_dims=ae_dims)
+
         self.post_bn = nn.Sequential(
             nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
@@ -218,32 +227,44 @@ class LIAE_UD_256(nn.Module):
         self.decoder_B = Decoder(d_dims=ae_dims)
         self.mask_decoder = MaskDecoder(d_mask_dims=ae_dims)
 
+        # ★ ae_dims*2 を前提にした LandmarkHead
         self.lm_head = LandmarkHead(ae_dims=ae_dims)
 
     def encode(self, x):
-        z = self.encoder(x)
-        z = self.post_bn(z)
-        return z
+        z_exp, z_id = self.encoder(x)
+        z_exp = self.post_bn(z_exp)
+        z_id  = self.post_bn(z_id)
+        return z_exp, z_id
 
     def forward(self, img_a, img_b, lm_a=None, lm_b=None,
                 warp_prob=0.0, hsv_power=0.0, noise_power=0.0, shell_power=0.0):
 
-        za = self.encode(img_a)
-        zb = self.encode(img_b)
+        zA_exp, zA_id = self.encode(img_a)
+        zB_exp, zB_id = self.encode(img_b)
 
-        # decoder は生 latent（sharp）
-        aa = self.decoder_A(za)
-        ab = self.decoder_B(za)
-        bb = self.decoder_B(zb)
-        ba = self.decoder_A(zb)
+        # ★ identity dropout（学習中だけ）
+        if self.training:
+            zB_id = zB_id + torch.randn_like(zB_id) * 0.15
 
-        # mask だけ UD
-        za_ud = self.ud(za)
-        zb_ud = self.ud(zb)
-        mask_a_pred = self.mask_decoder(za_ud)
-        mask_b_pred = self.mask_decoder(zb_ud)
 
-        lm_a_pred = self.lm_head(za)
-        lm_b_pred = self.lm_head(zb)
+        # A→A / B→B
+        aa = self.decoder_A(zA_exp)
+        bb = self.decoder_B(zB_id)
+
+        # A→B / B→A（SWAP）
+        ab = self.decoder_B(zA_exp)
+        ba = self.decoder_A(zB_exp)
+
+        # mask は expression latent から
+        zA_exp_ud = self.ud(zA_exp)
+        zB_exp_ud = self.ud(zB_exp)
+        mask_a_pred = self.mask_decoder(zA_exp_ud)
+        mask_b_pred = self.mask_decoder(zB_exp_ud)
+
+        # ★ landmarks は z_id + z_exp を concat して使う
+        lm_a_in = torch.cat([zA_id, zA_exp], dim=1)
+        lm_b_in = torch.cat([zB_id, zB_exp], dim=1)
+        lm_a_pred = self.lm_head(lm_a_in)
+        lm_b_pred = self.lm_head(lm_b_in)
 
         return aa, bb, ab, ba, mask_a_pred, mask_b_pred, lm_a_pred, lm_b_pred
