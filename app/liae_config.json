@@ -25,7 +25,7 @@
   "landmark_loss_weight": 0.003,
   "preview_interval": 300,
   "save_interval": 3000,
-  "target_steps": 30000,
+  "target_steps": 3100,
   "auto_mode": false,
   "auto_params_path": "app/auto_params.json"
 }

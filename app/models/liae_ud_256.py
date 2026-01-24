@@ -244,7 +244,7 @@ class LIAE_UD_256(nn.Module):
 
         # ★ identity dropout（学習中だけ）
         if self.training:
-            zB_id = zB_id + torch.randn_like(zB_id) * 0.15
+            zB_id = zB_id + torch.randn_like(zB_id) * 0.1
 
 
         # A→A / B→B
