@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from app.trainers.base_trainer import BaseTrainer
-from app.models.autoencoder_liae import LIAEModel
+from app.models import LIAEModel, LIAE_UD_256   # ★ ここを変更
 from app.losses.loss_saehd_light import SAEHDLightLoss
 from utils.preview import make_saehd_style_preview
 
@@ -23,7 +23,20 @@ class TrainerLIAE(BaseTrainer):
     def __init__(self, cfg):
         super().__init__(cfg)
 
-        self.model = LIAEModel(cfg).to(self.device)
+        # ★ ここで model_type に応じてモデルを切り替える
+        if getattr(cfg, "model_type", "liae") == "liae_ud_256":
+            # LIAE-UD 256 版
+            self.model = LIAE_UD_256(
+                e_dims=cfg.e_dims,
+                ae_dims=cfg.ae_dims,
+                d_dims=cfg.d_dims,
+                d_mask_dims=cfg.d_mask_dims,
+            ).to(self.device)
+            print("[Model] Using LIAE_UD_256")
+        else:
+            # 従来の LIAE
+            self.model = LIAEModel(cfg).to(self.device)
+            print("[Model] Using LIAEModel (standard LIAE)")
 
         if cfg.optimizer == "adam":
             self.opt = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)

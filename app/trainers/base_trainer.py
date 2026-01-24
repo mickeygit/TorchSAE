@@ -217,6 +217,7 @@ class BaseTrainer:
         print("==              TorchSAE Trainer (PyTorch)                ==")
         print("============================================================")
         print(f"==  Model: {self.cfg.model_name}")
+        print(f"==  Type: {self.cfg.model_type}")
         print(f"==  Resolution: {self.cfg.model_size}")
         print(f"==  Encoder dims: {self.cfg.e_dims}")
         print(f"==  AE dims: {self.cfg.ae_dims}")

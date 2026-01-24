@@ -38,8 +38,11 @@ def main():
 
     if model_type == "df":
         trainer = TrainerDF(cfg)
-    elif model_type == "liae":
+
+    elif model_type in ["liae", "liae_ud_256"]:
+        # ★ LIAE と LIAE_UD_256 は同じ TrainerLIAE を使う
         trainer = TrainerLIAE(cfg)
+
     else:
         raise ValueError(f"Unknown model_type: {cfg.model_type}")
 
