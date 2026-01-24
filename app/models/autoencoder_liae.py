@@ -2,6 +2,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# augment 系は utils/augment から import
+from app.utils.augment import (
+    random_warp_tensor,
+    random_hsv_tensor,
+    add_noise_tensor,
+    shell_augment,
+)
+
 
 # ============================================================
 # 基本ブロック
@@ -125,12 +133,12 @@ class LIAEMaskDecoder(nn.Module):
         self.dec = LIAEDecoder(out_ch=1, base_ch=base_ch, use_tanh=False)
 
     def forward(self, x):
-        mask = self.dec(x)          # logits（0〜∞）
+        mask = self.dec(x)          # logits
         mask = torch.sigmoid(mask)  # 0〜1
 
-        # ★ 後期安定化パッチ（本家 SAEHD と同じ）
-        mask = mask * 0.98 + 0.01               # saturate clamp（0/1 張り付き防止）
-        mask = F.avg_pool2d(mask, 3, 1, 1)      # blur（勾配安定化）
+        # 本家 SAEHD の安定化パッチ
+        mask = mask * 0.98 + 0.01
+        mask = F.avg_pool2d(mask, 3, 1, 1)
 
         return mask
 
@@ -196,8 +204,33 @@ class LIAEModel(nn.Module):
         return heatmap
 
     # ---------------------------------------------------------
-    def forward(self, a, b, lm_a, lm_b):
+    # forward（AUTO モード対応：warp/hsv/noise/shell）
+    # ---------------------------------------------------------
+    def forward(
+        self,
+        a,
+        b,
+        lm_a,
+        lm_b,
+        warp_prob=None,
+        hsv_power=None,
+        noise_power=None,
+        shell_power=None,
+    ):
         N, C, H, W = a.shape
+
+        # --- Augmentation（encoder 前） ---
+        if warp_prob and warp_prob > 0:
+            a = random_warp_tensor(a, warp_prob)
+            b = random_warp_tensor(b, warp_prob)
+
+        if hsv_power and hsv_power > 0:
+            a = random_hsv_tensor(a, hsv_power)
+            b = random_hsv_tensor(b, hsv_power)
+
+        if noise_power and noise_power > 0:
+            a = add_noise_tensor(a, noise_power)
+            b = add_noise_tensor(b, noise_power)
 
         # heatmap
         hm_a = self._landmarks_to_heatmap(lm_a, H, W)
@@ -223,9 +256,16 @@ class LIAEModel(nn.Module):
         ab = self.decoder(B_b)
         ba = self.decoder(B_a)
 
-        # mask logits
+        # mask
         mask_a = self.mask_decoder(AB_a)
         mask_b = self.mask_decoder(AB_b)
+
+        # --- shell augment（decoder 後） ---
+        if shell_power and shell_power > 0:
+            aa = shell_augment(aa, mask_a, shell_power)
+            bb = shell_augment(bb, mask_b, shell_power)
+            ab = shell_augment(ab, mask_b, shell_power)
+            ba = shell_augment(ba, mask_a, shell_power)
 
         # landmark prediction
         lm_a_pred = self.lm_head(AB_a).view(N, 68, 2)

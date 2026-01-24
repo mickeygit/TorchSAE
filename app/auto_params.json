@@ -1,0 +1,76 @@
+{
+    "learning_rate": {
+        "mode": "staged",
+        "schedule": [
+            {
+                "until": 10000,
+                "value": 5e-5
+            },
+            {
+                "until": 20000,
+                "value": 3e-5
+            },
+            {
+                "until": "end",
+                "value": 2e-5
+            }
+        ]
+    },
+    "warp_prob": {
+        "mode": "linear_decay",
+        "start": 1.0,
+        "end": 0.0,
+        "decay_steps": 15000
+    },
+    "landmark_weight": {
+        "mode": "staged",
+        "schedule": [
+            {
+                "until": 3000,
+                "value": 0.5
+            },
+            {
+                "until": 8000,
+                "value": 0.3
+            },
+            {
+                "until": 15000,
+                "value": 0.15
+            },
+            {
+                "until": "end",
+                "value": 0.1
+            }
+        ]
+    },
+    "hsv_power": {
+        "mode": "linear_decay",
+        "start": 0.3,
+        "end": 0.0,
+        "decay_steps": 8000
+    },
+    "noise_power": {
+        "mode": "linear_decay",
+        "start": 0.05,
+        "end": 0.0,
+        "decay_steps": 6000
+    },
+    "mask_weight": {
+        "mode": "linear_decay",
+        "start": 0.20,
+        "end": 0.08,
+        "decay_steps": 15000
+    },
+    "clip_grad": {
+        "mode": "linear_decay",
+        "start": 20,
+        "end": 8,
+        "decay_steps": 15000
+    },
+    "shell_power": {
+        "mode": "linear_decay",
+        "start": 1.0,
+        "end": 0.0,
+        "decay_steps": 20000
+    }
+}

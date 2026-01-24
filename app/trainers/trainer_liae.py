@@ -1,11 +1,12 @@
-# app/trainers/trainer_liae.py
+import os
+import json
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from app.trainers.base_trainer import BaseTrainer
-from app.models.autoencoder_liae import LIAEModel
+from app.models import LIAEModel, LIAE_UD_256   # ★ ここを変更
 from app.losses.loss_saehd_light import SAEHDLightLoss
 from utils.preview import make_saehd_style_preview
 
@@ -16,12 +17,26 @@ class TrainerLIAE(BaseTrainer):
       - 再構成 loss
       - mask loss (XSeg)
       - landmark loss
+      - AUTO モード対応（lr / mask / landmark / clip / warp / hsv / noise / shell）
     """
 
     def __init__(self, cfg):
         super().__init__(cfg)
 
-        self.model = LIAEModel(cfg).to(self.device)
+        # ★ ここで model_type に応じてモデルを切り替える
+        if getattr(cfg, "model_type", "liae") == "liae_ud_256":
+            # LIAE-UD 256 版
+            self.model = LIAE_UD_256(
+                e_dims=cfg.e_dims,
+                ae_dims=cfg.ae_dims,
+                d_dims=cfg.d_dims,
+                d_mask_dims=cfg.d_mask_dims,
+            ).to(self.device)
+            print("[Model] Using LIAE_UD_256")
+        else:
+            # 従来の LIAE
+            self.model = LIAEModel(cfg).to(self.device)
+            print("[Model] Using LIAEModel (standard LIAE)")
 
         if cfg.optimizer == "adam":
             self.opt = torch.optim.Adam(self.model.parameters(), lr=cfg.lr)
@@ -31,7 +46,61 @@ class TrainerLIAE(BaseTrainer):
         self.loss_fn = SAEHDLightLoss(resolution=cfg.model_size)
         self.bce = nn.BCEWithLogitsLoss()
 
+        # --- AUTO モード関連 ---
+        self.auto_mode = getattr(cfg, "auto_mode", False)
+        self.auto_params = None
 
+        if self.auto_mode:
+            auto_path = getattr(cfg, "auto_params_path", "auto_params.json")
+            if not os.path.isabs(auto_path):
+                auto_path = os.path.join(os.getcwd(), auto_path)
+            if os.path.exists(auto_path):
+                with open(auto_path, "r", encoding="utf-8") as f:
+                    self.auto_params = json.load(f)
+                print(f"[AUTO] Loaded auto params from: {auto_path}")
+            else:
+                print(f"[AUTO] auto_params file not found: {auto_path}. Disabling auto_mode.")
+                self.auto_mode = False
+                self.auto_params = None
+
+    # ---------------------------------------------------------
+    # AUTO モード用ヘルパ
+    # ---------------------------------------------------------
+    def _get_auto_value(self, name):
+        if self.auto_params is None or name not in self.auto_params:
+            return None
+
+        spec = self.auto_params[name]
+        mode = spec.get("mode", "linear_decay")
+        step = self.global_step
+
+        if mode == "linear_decay":
+            start = float(spec["start"])
+            end = float(spec["end"])
+            decay_steps = float(spec["decay_steps"])
+            if decay_steps <= 0:
+                return end
+            t = max(0.0, min(1.0, step / decay_steps))
+            return start + (end - start) * t
+
+        elif mode == "staged":
+            schedule = spec.get("schedule", [])
+            for s in schedule:
+                until = s["until"]
+                value = s["value"]
+                if until == "end":
+                    return value
+                if step <= int(until):
+                    return value
+            if schedule:
+                return schedule[-1]["value"]
+            return None
+
+        return None
+
+    # ---------------------------------------------------------
+    # 1 step 学習
+    # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
         img_a, lm_a, mask_a_gt = batch_a
         img_b, lm_b, mask_b_gt = batch_b
@@ -43,12 +112,62 @@ class TrainerLIAE(BaseTrainer):
         mask_a_gt = mask_a_gt.to(self.device)
         mask_b_gt = mask_b_gt.to(self.device)
 
+        # --- AUTO モード or 固定値でのパラメータ決定 ---
+        if self.auto_mode and self.auto_params is not None:
+
+            lr = self._get_auto_value("learning_rate") or self.cfg.lr
+            mask_w = self._get_auto_value("mask_weight") or self.cfg.mask_loss_weight
+            landmark_w = self._get_auto_value("landmark_weight") or self.cfg.landmark_loss_weight
+            clip_grad = self._get_auto_value("clip_grad") or self.cfg.clip_grad
+
+            warp_prob = self._get_auto_value("warp_prob")
+            if warp_prob is None:
+                warp_prob = float(self.cfg.random_warp)
+
+            hsv_power = self._get_auto_value("hsv_power")
+            if hsv_power is None:
+                hsv_power = float(self.cfg.random_hsv_power)
+
+            noise_power = self._get_auto_value("noise_power")
+            if noise_power is None:
+                noise_power = float(self.cfg.random_noise_power)
+
+            # ★ shell augment（新規）
+            shell_power = self._get_auto_value("shell_power")
+            if shell_power is None:
+                shell_power = 0.0
+
+        else:
+            # 従来の固定挙動
+            lr = self.cfg.lr
+            mask_w = self.cfg.mask_loss_weight * (
+                0.5 + 0.5 * torch.exp(-torch.tensor(self.global_step / 5000.0))
+            )
+            landmark_w = self.cfg.landmark_loss_weight
+            clip_grad = self.cfg.clip_grad
+
+            warp_prob = float(self.cfg.random_warp)
+            hsv_power = float(self.cfg.random_hsv_power)
+            noise_power = float(self.cfg.random_noise_power)
+            shell_power = 0.0
+
+        # optimizer の lr を更新
+        for g in self.opt.param_groups:
+            g["lr"] = lr
+
+        # --- forward ---
         with torch.cuda.amp.autocast(enabled=self.cfg.amp):
             (
                 aa, bb, ab, ba,
                 mask_a_pred, mask_b_pred,
                 lm_a_pred, lm_b_pred
-            ) = self.model(img_a, img_b, lm_a, lm_b)
+            ) = self.model(
+                img_a, img_b, lm_a, lm_b,
+                warp_prob=warp_prob,
+                hsv_power=hsv_power,
+                noise_power=noise_power,
+                shell_power=shell_power,   # ★ 追加
+            )
 
             # recon
             loss_aa = self.loss_fn(aa, img_a, lm_a)
@@ -69,33 +188,40 @@ class TrainerLIAE(BaseTrainer):
                 F.l1_loss(lm_b_pred, lm_b)
             )
 
-            # --- mask loss weight の自動減衰（後期安定化） ---
-            # 5000 step くらいで 50% に減衰する
-            mask_w = self.cfg.mask_loss_weight * (0.5 + 0.5 * torch.exp(-torch.tensor(self.global_step / 5000)))
-
             # total
             loss = (
                 recon_loss +
                 mask_w * mask_loss +
-                self.cfg.landmark_loss_weight * lm_loss
+                landmark_w * lm_loss
             )
 
+        # backward
         self.opt.zero_grad()
         self.scaler.scale(loss).backward()
 
-        if self.cfg.clip_grad > 0:
+        if clip_grad is not None and clip_grad > 0:
             self.scaler.unscale_(self.opt)
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.cfg.clip_grad)
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_grad)
 
         self.scaler.step(self.opt)
         self.scaler.update()
 
-        # ★ 内訳を返す
+        # --- ログ用 ---
         loss_dict = {
             "total": loss.item(),
             "recon": recon_loss.item(),
             "mask": mask_loss.item(),
             "landmark": lm_loss.item(),
+
+            "lr": float(lr),
+            "mask_w": float(mask_w),
+            "landmark_w": float(landmark_w),
+            "clip_grad": float(clip_grad),
+
+            "warp_prob": float(warp_prob),
+            "hsv_power": float(hsv_power),
+            "noise_power": float(noise_power),
+            "shell_power": float(shell_power),   # ★ 追加
         }
 
         return loss_dict, {
@@ -103,46 +229,44 @@ class TrainerLIAE(BaseTrainer):
             "mask_a_pred": mask_a_pred, "mask_b_pred": mask_b_pred,
             "lm_a_pred": lm_a_pred, "lm_b_pred": lm_b_pred,
         }
+
+    # ---------------------------------------------------------
+    # プレビュー生成（変更なし）
+    # ---------------------------------------------------------
     def make_preview(self, outputs, batch_a, batch_b):
         import torch
 
-        # --- 値域補正（完全版） ---
         def to_float01(x):
             x = x.float()
-            if x.min() < 0:          # -1〜1 の場合
+            if x.min() < 0:
                 x = (x + 1) / 2
-            if x.max() > 1.5:        # 0〜255 の float の場合
+            if x.max() > 1.5:
                 x = x / 255.0
             return x.clamp(0.0, 1.0)
 
-        # --- landmark 描画 ---
         def draw_landmarks_tensor(img, landmarks, color=(1.0, 1.0, 1.0)):
             out = img.clone()
-            c = torch.tensor(color).view(3,1,1)
+            c = torch.tensor(color).view(3, 1, 1)
             for (x, y) in landmarks:
                 x, y = int(x), int(y)
-                if 1 <= x < out.shape[2]-1 and 1 <= y < out.shape[1]-1:
-                    out[:, y-1:y+2, x-1:x+2] = c
+                if 1 <= x < out.shape[2] - 1 and 1 <= y < out.shape[1] - 1:
+                    out[:, y - 1:y + 2, x - 1:x + 2] = c
             return out
 
-        # --- 元画像と landmark ---
         img_a, lm_a, _ = batch_a
         img_b, lm_b, _ = batch_b
 
         lm_a = lm_a[0].cpu().numpy()
         lm_b = lm_b[0].cpu().numpy()
 
-        # --- モデル出力（aa / ab / bb / ba） ---
         aa = to_float01(outputs["aa"][0].detach().cpu())
         bb = to_float01(outputs["bb"][0].detach().cpu())
         ab = to_float01(outputs["ab"][0].detach().cpu())
         ba = to_float01(outputs["ba"][0].detach().cpu())
 
-        # --- 元画像に landmark を描画 ---
         a_orig_lm = to_float01(draw_landmarks_tensor(img_a[0].cpu(), lm_a))
         b_orig_lm = to_float01(draw_landmarks_tensor(img_b[0].cpu(), lm_b))
 
-        # --- mask（sigmoid → 値域補正） ---
         mask_a = to_float01(torch.sigmoid(outputs["mask_a_pred"][0]).detach().cpu())
         mask_b = to_float01(torch.sigmoid(outputs["mask_b_pred"][0]).detach().cpu())
 
@@ -161,23 +285,3 @@ class TrainerLIAE(BaseTrainer):
             "a_orig": a_orig_lm,
             "b_orig": b_orig_lm,
         }
-
-    @torch.no_grad()
-    def get_preview_batch(self, batch_a, batch_b):
-        img_a = batch_a["img"]
-        img_b = batch_b["img"]
-
-        aa, bb, ab, ba, mask_a_pred, mask_b_pred, _, _ = self.model(
-            img_a, img_b, batch_a["landmarks"], batch_b["landmarks"]
-        )
-
-        preview = make_saehd_style_preview(
-            img_a, img_b,
-            aa, bb,
-            ab,
-            mask_b_pred,
-        )
-
-        p = preview[0].detach().cpu().permute(1, 2, 0).numpy()
-        p = (p * 255).clip(0, 255).astype("uint8")
-        return p

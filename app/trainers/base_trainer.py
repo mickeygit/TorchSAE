@@ -40,7 +40,6 @@ class BaseTrainer:
         for k, v in preview_dict.items():
             print(k, v.min().item(), v.max().item())
 
-
         # 値域と dtype を完全補正
         def to_float01(x):
             if x.dtype == torch.uint8:
@@ -128,7 +127,6 @@ class BaseTrainer:
                 except Exception as e:
                     print(f"[Cleanup] Failed to remove {f}: {e}")
 
-
         # ★ preview の自動削除（最新5個だけ残す）
         previews = sorted(
             [f for f in os.listdir(self.save_dir) if f.startswith("preview_") and f.endswith(".jpg")],
@@ -143,7 +141,6 @@ class BaseTrainer:
                     print(f"[Cleanup] Removed old preview: {f}")
                 except Exception as e:
                     print(f"[Cleanup] Failed to remove preview {f}: {e}")
-
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -205,10 +202,22 @@ class BaseTrainer:
         # resume
         self._load_resume()
 
+        # --- resume 後の lr 即時適用（AUTO モード用） ---
+        if hasattr(self, "_get_auto_value") and getattr(self.cfg, "auto_mode", False):
+            try:
+                lr_now = self._get_auto_value("learning_rate")
+                if lr_now is not None:
+                    for g in self.opt.param_groups:
+                        g["lr"] = lr_now
+                    print(f"[AUTO-RESUME] Applied LR immediately after resume: {lr_now}")
+            except Exception as e:
+                print(f"[AUTO-RESUME] Failed to apply LR: {e}")
+
         print("============================================================")
         print("==              TorchSAE Trainer (PyTorch)                ==")
         print("============================================================")
         print(f"==  Model: {self.cfg.model_name}")
+        print(f"==  Type: {self.cfg.model_type}")
         print(f"==  Resolution: {self.cfg.model_size}")
         print(f"==  Encoder dims: {self.cfg.e_dims}")
         print(f"==  AE dims: {self.cfg.ae_dims}")
@@ -224,7 +233,7 @@ class BaseTrainer:
         try:
             while True:
 
-                # ★ ここを追加
+                # target_steps で停止
                 if getattr(self, "stop_training", False):
                     print("[Target] Training stopped by target_steps.")
                     break
@@ -250,7 +259,7 @@ class BaseTrainer:
                     self.stop_training = True
                     break
 
-
+                # --- ログ出力（50 step ごと） ---
                 if self.global_step % 50 == 0:
                     elapsed = time.time() - self.start_time
                     print(
@@ -262,9 +271,29 @@ class BaseTrainer:
                         f"elapsed={elapsed/60:.1f} min"
                     )
 
+                    # --- AUTO モードの現在パラメータ表示 ---
+                    if getattr(self.cfg, "auto_mode", False):
+                        try:
+                            print(
+                                f"        lr={loss_dict['lr']:.6f} "
+                                f"mask_w={loss_dict['mask_w']:.3f} "
+                                f"lm_w={loss_dict['landmark_w']:.3f} "
+                                f"clip={loss_dict['clip_grad']:.1f}"
+                            )
+                            print(
+                                f"        warp={loss_dict['warp_prob']:.3f} "
+                                f"hsv={loss_dict['hsv_power']:.3f} "
+                                f"noise={loss_dict['noise_power']:.3f} "
+                                f"shell={loss_dict.get('shell_power', 0.0):.3f}"   # ★ shell_power 追加
+                            )
+                        except KeyError:
+                            pass
+
+                # checkpoint 保存
                 if self.global_step % self.cfg.save_interval == 0:
                     self._save_checkpoint()
 
+                # preview 保存
                 if self.global_step % self.cfg.preview_interval == 0:
                     try:
                         preview = self.make_preview(outputs, batch_a, batch_b)
@@ -273,27 +302,20 @@ class BaseTrainer:
                         import os
                         import torch
 
-                        # --- 画像取り出し ---
-                        a_orig = preview["a_orig"]      # [3,128,128]
-                        b_orig = preview["b_orig"]      # [3,128,128]
+                        a_orig = preview["a_orig"]
+                        b_orig = preview["b_orig"]
 
                         aa = preview["aa"]
                         bb = preview["bb"]
                         ab = preview["ab"]
                         ba = preview["ba"]
 
-                        # ★ ここは make_preview 側で sigmoid 済み前提ならそのまま使う
-                        mask_a = preview["mask_a"]      # [1,128,128]
-                        mask_b = preview["mask_b"]      # [1,128,128]
+                        mask_a = preview["mask_a"]
+                        mask_b = preview["mask_b"]
 
-                        # --- mask を RGB に変換 ---
                         mask_a_rgb = mask_a.repeat(3, 1, 1)
                         mask_b_rgb = mask_b.repeat(3, 1, 1)
 
-
-                        # --- SAEHD 本家と同じ並び ---
-                        # A_orig | AA | AB | mask_A
-                        # B_orig | BB | BA | mask_B
                         grid = vutils.make_grid(
                             [
                                 a_orig, aa, ab, mask_a_rgb,

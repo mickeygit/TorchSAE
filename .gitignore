@@ -70,6 +70,7 @@ Thumbs.db
 *.tmp
 *.temp
 *.bak
+*.bak_*
 
 # Shell history (never commit)
 .bash_history
