@@ -181,7 +181,7 @@ class UniformDistribution(nn.Module):
     def forward(self, x):
         mean = x.mean(dim=[2, 3], keepdim=True)
         std = x.std(dim=[2, 3], keepdim=True) + self.eps
-        return (x - mean) / std
+        return (x - mean) / (std * 0.8 + self.eps)
 
 
 # ============================================================
@@ -232,9 +232,16 @@ class LIAE_UD_256(nn.Module):
 
     def encode(self, x):
         z_exp, z_id = self.encoder(x)
+
+        # ★ z_exp は post_bn を通す（表情は揺れてOK）
         z_exp = self.post_bn(z_exp)
-        z_id  = self.post_bn(z_id)
+
+        # ★ z_id は post_bn を通さない（identity の安定化）
+        # z_id = self.post_bn(z_id)
+        z_id = z_id
+
         return z_exp, z_id
+
 
     def forward(self, img_a, img_b, lm_a=None, lm_b=None,
                 warp_prob=0.0, hsv_power=0.0, noise_power=0.0, shell_power=0.0):
@@ -242,10 +249,9 @@ class LIAE_UD_256(nn.Module):
         zA_exp, zA_id = self.encode(img_a)
         zB_exp, zB_id = self.encode(img_b)
 
-        # ★ identity dropout（学習中だけ）
-        if self.training:
-            zB_id = zB_id + torch.randn_like(zB_id) * 0.1
-
+        # # ★ identity dropout（学習中だけ）
+        # if self.training:
+        #     zB_id = zB_id + torch.randn_like(zB_id) * 0.11
 
         # A→A / B→B
         aa = self.decoder_A(zA_exp)
@@ -268,3 +274,105 @@ class LIAE_UD_256(nn.Module):
         lm_b_pred = self.lm_head(lm_b_in)
 
         return aa, bb, ab, ba, mask_a_pred, mask_b_pred, lm_a_pred, lm_b_pred
+
+    @torch.no_grad()
+    def reset_decoder_A_out_block(self):
+        print("=== Reset decoder_A.out_block parameters ===")
+        for m in self.decoder_A.out_block.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+
+
+    @torch.no_grad()
+    def reset_decoder_B_out_block(self):
+        print("=== Reset decoder_B.out_block parameters ===")
+        for m in self.decoder_B.out_block.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        
+    @torch.no_grad()
+    def reset_encoder_id_block(self):
+        print("=== Reset encoder identity block (down2/res2/down3/res3/down4/res4/reduce/sharpen/to_id/to_exp) ===")
+        # ここは既存のまま
+        for m in self.encoder.down2.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.res2.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.down3.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.res3.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.down4.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.res4.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.reduce.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.sharpen.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.to_id.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+        for m in self.encoder.to_exp.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+
+    @torch.no_grad()
+    def reset_encoder_full(self):
+        print("=== Reset FULL encoder (all Conv2d in DFEncoder) ===")
+        for m in self.encoder.modules():
+            if isinstance(m, nn.Conv2d):
+                m.reset_parameters()
+
+    @torch.no_grad()
+    def make_preview_grid(self, preview_dict):
+        import torchvision.utils as vutils
+        import torch
+
+        # --- 値域補正 ---
+        def to_float01(x):
+            if x.dtype == torch.uint8:
+                x = x.float() / 255.0
+            else:
+                x = x.float()
+                if x.max() > 1.5:
+                    x = x / 255.0
+            return x.clamp(0.0, 1.0)
+
+        a_orig = to_float01(preview_dict["a_orig"])
+        b_orig = to_float01(preview_dict["b_orig"])
+        aa     = to_float01(preview_dict["aa"])
+        bb     = to_float01(preview_dict["bb"])
+        ab     = to_float01(preview_dict["ab"])
+        ba     = to_float01(preview_dict["ba"])
+
+        mask_a = to_float01(preview_dict["mask_a"])
+        mask_b = to_float01(preview_dict["mask_b"])
+
+        if mask_a.ndim == 2:
+            mask_a = mask_a.unsqueeze(0)
+        if mask_b.ndim == 2:
+            mask_b = mask_b.unsqueeze(0)
+
+        mask_a_rgb = mask_a.repeat(3, 1, 1)
+        mask_b_rgb = mask_b.repeat(3, 1, 1)
+
+        # normalize=False が絶対に正しい
+        grid = vutils.make_grid(
+            [
+                a_orig, aa, ab, mask_a_rgb,
+                b_orig, bb, ba, mask_b_rgb,
+            ],
+            nrow=4,
+            normalize=False,
+        )
+
+        return grid

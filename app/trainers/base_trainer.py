@@ -4,6 +4,7 @@ import os
 import time
 import torch
 from torch.cuda.amp import GradScaler
+import torch.nn as nn
 
 
 class BaseTrainer:
@@ -168,6 +169,24 @@ class BaseTrainer:
             self.global_step = state["step"]
             print(f"[Resume] Resumed from step {self.global_step}")
 
+    @torch.no_grad()
+    def save_preview(self, outputs, batch_a, batch_b, suffix=""):
+        try:
+            preview = self.make_preview(outputs, batch_a, batch_b)
+
+            # モデル側の統一 preview 関数を使う
+            grid = self.model.make_preview_grid(preview)
+
+            import torchvision.utils as vutils
+            import os
+
+            preview_path = os.path.join(self.save_dir, f"preview_{self.global_step}{suffix}.jpg")
+            vutils.save_image(grid, preview_path)
+            print(f"[Preview] Saved: {preview_path}")
+
+        except Exception as e:
+            print(f"[Preview] Failed: {e}")
+
     # ---------------------------------------------------------
     # メインループ
     # ---------------------------------------------------------
@@ -201,6 +220,42 @@ class BaseTrainer:
 
         # resume
         self._load_resume()
+
+
+        # resume
+        self._load_resume()
+
+        # ★ LIAE_UD_256 のときだけ encoder.to_id をリセット
+        if hasattr(self.model, "encoder") and hasattr(self.model.encoder, "to_id"):
+            if getattr(self.cfg, "reset_encoder_z_id", False):
+                print("[Reset] encoder.to_id reset")
+                for m in self.model.encoder.to_id.modules():
+                    if isinstance(m, nn.Conv2d):
+                        m.reset_parameters()
+
+
+        # ★ FULL encoder reset（down1〜to_id/to_exp すべて）
+        if hasattr(self.model, "reset_encoder_full"):
+            if getattr(self.cfg, "reset_encoder_full", False):
+                print("[Reset] FULL encoder reset")
+                self.model.reset_encoder_full()
+
+        # ★ decoder_A の out_block も必要ならリセット
+        if hasattr(self.model, "reset_decoder_A_out_block"):
+            if getattr(self.cfg, "reset_decoder_a", False):
+                print("[Reset] decoder_A.out_block reset")
+                self.model.reset_decoder_A_out_block()
+
+        # ★ decoder_B の out_block も必要ならリセット
+        if hasattr(self.model, "reset_decoder_B_out_block"):
+            if getattr(self.cfg, "reset_decoder_b", False):
+                print("[Reset] decoder_B.out_block reset")
+                self.model.reset_decoder_B_out_block()
+
+        if getattr(self.cfg, "reset_encoder_id_block", False):
+            self.model.reset_encoder_id_block()
+
+
 
         # --- resume 後の lr 即時適用（AUTO モード用） ---
         if hasattr(self, "_get_auto_value") and getattr(self.cfg, "auto_mode", False):
@@ -261,6 +316,7 @@ class BaseTrainer:
                     # ★ target 到達時にも checkpoint を保存
                     try:
                         self._save_checkpoint()
+                        self.save_preview(outputs, batch_a, batch_b, suffix="_final")
                     except Exception as e:
                         print(f"[Target] Failed to save checkpoint: {e}")
 
@@ -304,39 +360,7 @@ class BaseTrainer:
                 # preview 保存
                 if self.global_step % self.cfg.preview_interval == 0:
                     try:
-                        preview = self.make_preview(outputs, batch_a, batch_b)
-
-                        import torchvision.utils as vutils
-                        import os
-                        import torch
-
-                        a_orig = preview["a_orig"]
-                        b_orig = preview["b_orig"]
-
-                        aa = preview["aa"]
-                        bb = preview["bb"]
-                        ab = preview["ab"]
-                        ba = preview["ba"]
-
-                        mask_a = preview["mask_a"]
-                        mask_b = preview["mask_b"]
-
-                        mask_a_rgb = mask_a.repeat(3, 1, 1)
-                        mask_b_rgb = mask_b.repeat(3, 1, 1)
-
-                        grid = vutils.make_grid(
-                            [
-                                a_orig, aa, ab, mask_a_rgb,
-                                b_orig, bb, ba, mask_b_rgb,
-                            ],
-                            nrow=4,
-                            normalize=True,
-                            value_range=(0, 1),
-                        )
-
-                        preview_path = os.path.join(self.save_dir, f"preview_{self.global_step}.jpg")
-                        vutils.save_image(grid, preview_path)
-                        print(f"[Preview] Saved: {preview_path}")
+                        self.save_preview(outputs, batch_a, batch_b)
 
                     except Exception as e:
                         print(f"[Preview] Failed: {e}")
@@ -344,4 +368,11 @@ class BaseTrainer:
         except KeyboardInterrupt:
             print("\n[Exit] Caught Ctrl+C, saving final checkpoint...")
             self._save_checkpoint()
+
+            # ★ 最終プレビュー保存
+            try:
+                self.save_preview(outputs, batch_a, batch_b, suffix="_final")
+            except Exception as e:
+                print(f"[Exit] Failed to save final preview: {e}")
+
             print("[Exit] Done.")

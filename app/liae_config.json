@@ -5,7 +5,7 @@
   "data_a": "/workspace/data/A",
   "data_b": "/workspace/data/B",
   "save_dir": "/workspace/models",
-  "resume_path": "/workspace/models/LIAE_UD_256_256_ae768_d256_mask256_step4018.pth",
+  "resume_path": "/workspace/models/LIAE_UD_256_256_ae768_d256_mask256_step8204.pth",
   "batch_size": 4,
   "num_workers": 4,
   "lr": 5e-05,
@@ -23,9 +23,14 @@
   "use_landmarks": true,
   "mask_loss_weight": 0.02,
   "landmark_loss_weight": 0.003,
-  "preview_interval": 300,
+  "preview_interval": 200,
   "save_interval": 3000,
-  "target_steps": 5000,
+  "target_steps": 10000,
   "auto_mode": false,
-  "auto_params_path": "app/auto_params.json"
+  "auto_params_path": "app/auto_params.json",
+  "reset_encoder_id_block": false,
+  "reset_encoder_z_id": false,
+  "reset_encoder_full": true,
+  "reset_decoder_a": true,
+  "reset_decoder_b": true
 }
