@@ -12,8 +12,8 @@ class BaseTrainer:
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = None          # 子クラスでセット
-        self.opt = None            # 子クラスでセット
+        self.model = None
+        self.opt = None
         self.scaler = GradScaler(enabled=cfg.amp)
 
         self.global_step = 0
@@ -26,31 +26,64 @@ class BaseTrainer:
     # 子クラスで実装する必要があるメソッド
     # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
-        """
-        1 step 分の学習を行う。
-        戻り値:
-          loss_dict, outputs
-        """
         raise NotImplementedError
 
+    def make_preview(self, outputs, batch_a, batch_b):
+        """
+        Trainer 側は preview_dict を返すだけ。
+        モデル側の make_preview_grid が grid を作る。
+        """
+        raise NotImplementedError(
+            "Trainer must implement make_preview() and return preview_dict"
+        )
+
     # ---------------------------------------------------------
-    # checkpoint 保存 / ロード
+    # preview 保存（抽象メソッド前提の最小構成）
+    # ---------------------------------------------------------
+    @torch.no_grad()
+    def save_preview(self, outputs, batch_a, batch_b, suffix=""):
+        """
+        preview_dict → model.make_preview_grid(preview_dict) → PNG 保存
+        という最小構成。
+        """
+        try:
+            preview_dict = self.make_preview(outputs, batch_a, batch_b)
+
+            # ★ モデル側の make_preview_grid を必須とする
+            if not hasattr(self.model, "make_preview_grid"):
+                raise NotImplementedError(
+                    "Model must implement make_preview_grid(preview_dict)"
+                )
+
+            grid = self.model.make_preview_grid(preview_dict)
+
+            import torchvision.utils as vutils
+
+            preview_path = os.path.join(
+                self.save_dir,
+                f"preview_{self.global_step}{suffix}.png"
+            )
+            vutils.save_image(grid, preview_path, normalize=False)
+            print(f"[Preview] Saved: {preview_path}")
+
+        except Exception as e:
+            print(f"[Preview] Failed: {e}")
+
+    # ---------------------------------------------------------
+    # checkpoint 保存 / ロード（変更なし）
     # ---------------------------------------------------------
     def _save_checkpoint(self):
-        # 保存する state
         state = {
             "step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.opt.state_dict(),
         }
 
-        # ★ 本家風＋構造情報入りのファイル名を生成
         model_type = getattr(self.cfg, "model_type", "model").upper()
         model_size = getattr(self.cfg, "model_size", 128)
         ae_dims = getattr(self.cfg, "ae_dims", 512)
         d_dims = getattr(self.cfg, "d_dims", 128)
         d_mask_dims = getattr(self.cfg, "d_mask_dims", 128)
-        target_steps = getattr(self.cfg, "target_steps", None)
 
         filename = (
             f"{model_type}_{model_size}_ae{ae_dims}_d{d_dims}_"
@@ -58,39 +91,32 @@ class BaseTrainer:
         )
         path = os.path.join(self.save_dir, filename)
 
-        # 保存
         torch.save(state, path)
         print(f"[Save] Saved checkpoint: {path}")
 
-        # ★ 古い checkpoint を削除（最新2個だけ残す）
+        # 古い checkpoint 削除
         ckpts = sorted(
             [f for f in os.listdir(self.save_dir) if f.endswith(".pth")],
             key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
         )
-
         if len(ckpts) > 2:
-            old_ckpts = ckpts[:-2]
-            for f in old_ckpts:
+            for f in ckpts[:-2]:
                 try:
                     os.remove(os.path.join(self.save_dir, f))
-                    print(f"[Cleanup] Removed old checkpoint: {f}")
-                except Exception as e:
-                    print(f"[Cleanup] Failed to remove {f}: {e}")
+                except:
+                    pass
 
-        # ★ preview の自動削除（最新5個だけ残す）
+        # 古い preview 削除
         previews = sorted(
             [f for f in os.listdir(self.save_dir) if f.startswith("preview_")],
             key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
         )
-
         if len(previews) > 5:
-            old_previews = previews[:-5]
-            for f in old_previews:
+            for f in previews[:-5]:
                 try:
                     os.remove(os.path.join(self.save_dir, f))
-                    print(f"[Cleanup] Removed old preview: {f}")
-                except Exception as e:
-                    print(f"[Cleanup] Failed to remove preview {f}: {e}")
+                except:
+                    pass
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -104,44 +130,18 @@ class BaseTrainer:
         print(f"[Resume] Loading checkpoint: {resume_path}")
         state = torch.load(resume_path, map_location=self.device)
 
-        # ★ モデルは strict=False で部分ロード（lm_head 追加などに対応）
         self.model.load_state_dict(state["model"], strict=False)
 
         if "optimizer" in state:
             try:
                 self.opt.load_state_dict(state["optimizer"])
-            except Exception:
+            except:
                 print("[Warn] Optimizer state mismatch. Skipping optimizer state.")
 
-        # step は引き継ぐ
         if "step" in state:
             self.global_step = state["step"]
             print(f"[Resume] Resumed from step {self.global_step}")
 
-    @torch.no_grad()
-    def save_preview(self, outputs, batch_a, batch_b, suffix=""):
-        """
-        preview_dict → model.make_preview_grid() → PNG 保存
-        に完全統一された経路。
-        """
-        try:
-            preview = self.make_preview(outputs, batch_a, batch_b)
-
-            # モデル側の統一 preview 関数を使う
-            grid = self.model.make_preview_grid(preview)
-
-            import torchvision.utils as vutils
-            import os
-
-            preview_path = os.path.join(
-                self.save_dir,
-                f"preview_{self.global_step}{suffix}.png"  # ★ PNG 保存
-            )
-            vutils.save_image(grid, preview_path)
-            print(f"[Preview] Saved: {preview_path}")
-
-        except Exception as e:
-            print(f"[Preview] Failed: {e}")
 
     # ---------------------------------------------------------
     # メインループ

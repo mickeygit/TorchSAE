@@ -6,9 +6,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from app.trainers.base_trainer import BaseTrainer
-from app.models import LIAEModel, LIAE_UD_256   # ★ ここを変更
+from app.models import LIAEModel, LIAE_UD_256
 from app.losses.loss_saehd_light import SAEHDLightLoss
-from utils.preview import make_saehd_style_preview
 
 
 class TrainerLIAE(BaseTrainer):
@@ -231,57 +230,50 @@ class TrainerLIAE(BaseTrainer):
         }
 
     # ---------------------------------------------------------
-    # プレビュー生成（変更なし）
+    # プレビュー生成（preview_utils 前提のシンプル版）
     # ---------------------------------------------------------
     def make_preview(self, outputs, batch_a, batch_b):
-        import torch
-
-        def to_float01(x):
-            x = x.float()
-            if x.min() < 0:
-                x = (x + 1) / 2
-            if x.max() > 1.5:
-                x = x / 255.0
-            return x.clamp(0.0, 1.0)
-
-        def draw_landmarks_tensor(img, landmarks, color=(1.0, 1.0, 1.0)):
-            out = img.clone()
-            c = torch.tensor(color).view(3, 1, 1)
-            for (x, y) in landmarks:
-                x, y = int(x), int(y)
-                if 1 <= x < out.shape[2] - 1 and 1 <= y < out.shape[1] - 1:
-                    out[:, y - 1:y + 2, x - 1:x + 2] = c
-            return out
-
+        """
+        preview_utils.make_preview_grid / save_preview に渡すための
+        テンソル群をまとめて返すだけの関数。
+        """
         img_a, lm_a, _ = batch_a
         img_b, lm_b, _ = batch_b
 
-        lm_a = lm_a[0].cpu().numpy()
-        lm_b = lm_b[0].cpu().numpy()
+        # 1枚目だけ使う前提
+        img_a_0 = img_a[0].detach().cpu()
+        img_b_0 = img_b[0].detach().cpu()
 
-        aa = to_float01(outputs["aa"][0].detach().cpu())
-        bb = to_float01(outputs["bb"][0].detach().cpu())
-        ab = to_float01(outputs["ab"][0].detach().cpu())
-        ba = to_float01(outputs["ba"][0].detach().cpu())
+        aa = outputs["aa"][0].detach().cpu()
+        bb = outputs["bb"][0].detach().cpu()
+        ab = outputs["ab"][0].detach().cpu()
+        ba = outputs["ba"][0].detach().cpu()
 
-        a_orig_lm = to_float01(draw_landmarks_tensor(img_a[0].cpu(), lm_a))
-        b_orig_lm = to_float01(draw_landmarks_tensor(img_b[0].cpu(), lm_b))
+        # マスクは 1ch のまま返す（repeat は preview_utils.prepare_mask 側）
+        mask_a = torch.sigmoid(outputs["mask_a_pred"][0]).detach().cpu()
+        mask_b = torch.sigmoid(outputs["mask_b_pred"][0]).detach().cpu()
 
-        mask_a = to_float01(torch.sigmoid(outputs["mask_a_pred"][0]).detach().cpu())
-        mask_b = to_float01(torch.sigmoid(outputs["mask_b_pred"][0]).detach().cpu())
+        # ここでは 0〜1 に軽く整えるだけ（clamp は preview_utils 側でもう一度かかる）
+        def to_01(x):
+            x = x.float()
+            return x.clamp(0.0, 1.0)
 
-        if mask_a.ndim == 2:
-            mask_a = mask_a.unsqueeze(0)
-        if mask_b.ndim == 2:
-            mask_b = mask_b.unsqueeze(0)
+        a_orig = to_01(img_a_0)
+        b_orig = to_01(img_b_0)
+        aa = to_01(aa)
+        bb = to_01(bb)
+        ab = to_01(ab)
+        ba = to_01(ba)
+        mask_a = to_01(mask_a)
+        mask_b = to_01(mask_b)
 
         return {
+            "a_orig": a_orig,
+            "b_orig": b_orig,
             "aa": aa,
             "bb": bb,
             "ab": ab,
             "ba": ba,
             "mask_a": mask_a,
             "mask_b": mask_b,
-            "a_orig": a_orig_lm,
-            "b_orig": b_orig_lm,
         }

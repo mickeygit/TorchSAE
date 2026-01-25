@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from app.utils.preview_utils import to_image_tensor, prepare_mask
 
 
 # ============================================================
@@ -317,44 +318,29 @@ class LIAE_UD_256(nn.Module):
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
 
+
     @torch.no_grad()
     def make_preview_grid(self, preview_dict):
-        import torchvision.utils as vutils
 
-        def to_float01(x):
-            # uint8 → 0〜1
-            if x.dtype == torch.uint8:
-                x = x.float() / 255.0
-            else:
-                x = x.float()
-            return x.clamp(0.0, 1.0)
+        # 画像（3ch）
+        a_orig = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0)
+        aa     = to_image_tensor(preview_dict["aa"]).unsqueeze(0)
+        ab     = to_image_tensor(preview_dict["ab"]).unsqueeze(0)
 
-        a_orig = to_float01(preview_dict["a_orig"])
-        b_orig = to_float01(preview_dict["b_orig"])
-        aa     = to_float01(preview_dict["aa"])
-        bb     = to_float01(preview_dict["bb"])
-        ab     = to_float01(preview_dict["ab"])
-        ba     = to_float01(preview_dict["ba"])
+        b_orig = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0)
+        bb     = to_image_tensor(preview_dict["bb"]).unsqueeze(0)
+        ba     = to_image_tensor(preview_dict["ba"]).unsqueeze(0)
 
-        mask_a = to_float01(preview_dict["mask_a"])
-        mask_b = to_float01(preview_dict["mask_b"])
+        # マスク（1ch → 3ch）
+        mask_a = prepare_mask(preview_dict["mask_a"].unsqueeze(0))
+        mask_b = prepare_mask(preview_dict["mask_b"].unsqueeze(0))
 
-        if mask_a.ndim == 2:
-            mask_a = mask_a.unsqueeze(0)
-        if mask_b.ndim == 2:
-            mask_b = mask_b.unsqueeze(0)
+        # A 行
+        row_a = torch.cat([a_orig, aa, ab, mask_a], dim=0)
+        # B 行
+        row_b = torch.cat([b_orig, bb, ba, mask_b], dim=0)
 
-        mask_a_rgb = mask_a.clamp(0, 1).repeat(3, 1, 1)
-        mask_b_rgb = mask_b.clamp(0, 1).repeat(3, 1, 1)
-
-        grid = vutils.make_grid(
-            [
-                a_orig, aa, ab, mask_a_rgb,
-                b_orig, bb, ba, mask_b_rgb,
-            ],
-            nrow=4,
-            normalize=False,
-        )
-        grid = grid.clamp(0.0, 1.0)  # ★ 最終白飛び防止
+        # 2 行を縦に結合
+        grid = torch.cat([row_a, row_b], dim=0)
 
         return grid

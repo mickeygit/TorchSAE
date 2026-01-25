@@ -5,7 +5,7 @@
   "data_a": "/workspace/data/A",
   "data_b": "/workspace/data/B",
   "save_dir": "/workspace/models",
-  "resume_path": "/workspace/models/LIAE_UD_256_256_ae768_d256_mask256_step10828.pth",
+  "resume_path": "/workspace/models/LIAE_UD_256_256_ae768_d256_mask256_step14094.pth",
   "batch_size": 4,
   "num_workers": 4,
   "lr": 5e-05,
