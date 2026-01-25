@@ -253,9 +253,17 @@ class BaseTrainer:
                 loss_dict, outputs = self.train_step(batch_a, batch_b)
                 self.global_step += 1
 
+                # target_steps で停止
                 target_steps = getattr(self.cfg, "target_steps", None)
                 if target_steps is not None and self.global_step >= target_steps:
                     print(f"[Target] Reached target steps ({target_steps}). Stopping training.")
+
+                    # ★ target 到達時にも checkpoint を保存
+                    try:
+                        self._save_checkpoint()
+                    except Exception as e:
+                        print(f"[Target] Failed to save checkpoint: {e}")
+
                     self.stop_training = True
                     break
 
