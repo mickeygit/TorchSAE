@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+# ★ preview_utils はここで読み込む（正しい位置）
 from app.utils.preview_utils import to_image_tensor, prepare_mask
 
 
@@ -71,7 +73,7 @@ class Decoder(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(ch, ch, 1),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 3, 3, padding=1, bias=False),  # ★ bias 切り
+            nn.Conv2d(ch, 3, 3, padding=1, bias=False),
         )
 
     def forward(self, x):
@@ -189,7 +191,7 @@ class UniformDistribution(nn.Module):
 class LandmarkHead(nn.Module):
     def __init__(self, ae_dims=768):
         super().__init__()
-        in_ch = ae_dims * 2  # z_id + z_exp
+        in_ch = ae_dims * 2
 
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, 256, 3, padding=1),
@@ -229,10 +231,7 @@ class LIAE_UD_256(nn.Module):
 
     def encode(self, x):
         z_exp, z_id = self.encoder(x)
-
         z_exp = self.post_bn(z_exp)
-        z_id = z_id  # identity はそのまま
-
         return z_exp, z_id
 
     def forward(self, img_a, img_b, lm_a=None, lm_b=None,
@@ -241,27 +240,27 @@ class LIAE_UD_256(nn.Module):
         zA_exp, zA_id = self.encode(img_a)
         zB_exp, zB_id = self.encode(img_b)
 
-        # A→A / B→B
         aa = self.decoder_A(zA_exp)
         bb = self.decoder_B(zB_id)
 
-        # A→B / B→A（SWAP）
         ab = self.decoder_B(zA_exp)
         ba = self.decoder_A(zB_exp)
 
-        # mask は expression latent から
         zA_exp_ud = self.ud(zA_exp)
         zB_exp_ud = self.ud(zB_exp)
         mask_a_pred = self.mask_decoder(zA_exp_ud)
         mask_b_pred = self.mask_decoder(zB_exp_ud)
 
-        # landmarks は z_id + z_exp を concat
         lm_a_in = torch.cat([zA_id, zA_exp], dim=1)
         lm_b_in = torch.cat([zB_id, zB_exp], dim=1)
         lm_a_pred = self.lm_head(lm_a_in)
         lm_b_pred = self.lm_head(lm_b_in)
 
         return aa, bb, ab, ba, mask_a_pred, mask_b_pred, lm_a_pred, lm_b_pred
+
+    # ============================================================
+    # reset 系（変更なし）
+    # ============================================================
 
     @torch.no_grad()
     def reset_decoder_A_out_block(self):
@@ -279,50 +278,32 @@ class LIAE_UD_256(nn.Module):
 
     @torch.no_grad()
     def reset_encoder_id_block(self):
-        print("=== Reset encoder identity block (down2/res2/down3/res3/down4/res4/reduce/sharpen/to_id/to_exp) ===")
-        for m in self.encoder.down2.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.res2.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.down3.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.res3.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.down4.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.res4.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.reduce.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.sharpen.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.to_id.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
-        for m in self.encoder.to_exp.modules():
-            if isinstance(m, nn.Conv2d):
-                m.reset_parameters()
+        print("=== Reset encoder identity block ===")
+        for block in [
+            self.encoder.down2, self.encoder.res2,
+            self.encoder.down3, self.encoder.res3,
+            self.encoder.down4, self.encoder.res4,
+            self.encoder.reduce, self.encoder.sharpen,
+            self.encoder.to_id, self.encoder.to_exp
+        ]:
+            for m in block.modules():
+                if isinstance(m, nn.Conv2d):
+                    m.reset_parameters()
 
     @torch.no_grad()
     def reset_encoder_full(self):
-        print("=== Reset FULL encoder (all Conv2d in DFEncoder) ===")
+        print("=== Reset FULL encoder ===")
         for m in self.encoder.modules():
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
 
+    # ============================================================
+    # preview（preview_utils に完全準拠）
+    # ============================================================
 
     @torch.no_grad()
     def make_preview_grid(self, preview_dict):
 
-        # 画像（3ch）
         a_orig = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0)
         aa     = to_image_tensor(preview_dict["aa"]).unsqueeze(0)
         ab     = to_image_tensor(preview_dict["ab"]).unsqueeze(0)
@@ -331,16 +312,10 @@ class LIAE_UD_256(nn.Module):
         bb     = to_image_tensor(preview_dict["bb"]).unsqueeze(0)
         ba     = to_image_tensor(preview_dict["ba"]).unsqueeze(0)
 
-        # マスク（1ch → 3ch）
         mask_a = prepare_mask(preview_dict["mask_a"].unsqueeze(0))
         mask_b = prepare_mask(preview_dict["mask_b"].unsqueeze(0))
 
-        # A 行
         row_a = torch.cat([a_orig, aa, ab, mask_a], dim=0)
-        # B 行
         row_b = torch.cat([b_orig, bb, ba, mask_b], dim=0)
 
-        # 2 行を縦に結合
-        grid = torch.cat([row_a, row_b], dim=0)
-
-        return grid
+        return torch.cat([row_a, row_b], dim=0)

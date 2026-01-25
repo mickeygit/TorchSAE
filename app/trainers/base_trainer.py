@@ -5,7 +5,7 @@ import time
 import torch
 from torch.cuda.amp import GradScaler
 import torch.nn as nn
-
+from app.utils.debug_utils import tensor_minmax
 
 class BaseTrainer:
     def __init__(self, cfg):
@@ -315,11 +315,11 @@ class BaseTrainer:
                     a_orig = batch_a[0]
                     b_orig = batch_b[0]
 
-                    print(f"[DEBUG] step={self.global_step} a_orig min={a_orig.min().item():.3f} max={a_orig.max().item():.3f}")
-                    print(f"[DEBUG] step={self.global_step} aa     min={aa.min().item():.3f} max={aa.max().item():.3f}")
-
-                    print(f"[DEBUG] step={self.global_step} b_orig min={b_orig.min().item():.3f} max={b_orig.max().item():.3f}")
-                    print(f"[DEBUG] step={self.global_step} bb     min={bb.min().item():.3f} max={bb.max().item():.3f}")
+                    # ★ debug_utils に統一
+                    tensor_minmax("a_orig", a_orig)
+                    tensor_minmax("aa", aa)
+                    tensor_minmax("b_orig", b_orig)
+                    tensor_minmax("bb", bb)
 
                     try:
                         self.save_preview(outputs, batch_a, batch_b)

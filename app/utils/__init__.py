@@ -3,16 +3,21 @@
 from .preview_utils import (
     to_image_tensor,
     prepare_mask,
-    make_preview_grid,
-    save_preview,
 )
 
 from .checkpoint import save_checkpoint
 
+from .debug_utils import (
+    tensor_minmax,
+    tensor_stats,
+    check_nan_inf,
+)
+
 __all__ = [
-    "save_checkpoint",
     "to_image_tensor",
     "prepare_mask",
-    "make_preview_grid",
-    "save_preview",
+    "save_checkpoint",
+    "tensor_minmax",
+    "tensor_stats",
+    "check_nan_inf",
 ]
