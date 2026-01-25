@@ -5,7 +5,7 @@ import time
 import torch
 from torch.cuda.amp import GradScaler
 import torch.nn as nn
-from app.utils.debug_utils import tensor_minmax
+
 
 class BaseTrainer:
     def __init__(self, cfg):
@@ -22,34 +22,19 @@ class BaseTrainer:
         self.save_dir = cfg.save_dir
         os.makedirs(self.save_dir, exist_ok=True)
 
-    # ---------------------------------------------------------
-    # 子クラスで実装する必要があるメソッド
-    # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
         raise NotImplementedError
 
     def make_preview(self, outputs, batch_a, batch_b):
-        """
-        Trainer 側は preview_dict を返すだけ。
-        モデル側の make_preview_grid が grid を作る。
-        """
         raise NotImplementedError(
             "Trainer must implement make_preview() and return preview_dict"
         )
 
-    # ---------------------------------------------------------
-    # preview 保存（抽象メソッド前提の最小構成）
-    # ---------------------------------------------------------
     @torch.no_grad()
     def save_preview(self, outputs, batch_a, batch_b, suffix=""):
-        """
-        preview_dict → model.make_preview_grid(preview_dict) → PNG 保存
-        という最小構成。
-        """
         try:
             preview_dict = self.make_preview(outputs, batch_a, batch_b)
 
-            # ★ モデル側の make_preview_grid を必須とする
             if not hasattr(self.model, "make_preview_grid"):
                 raise NotImplementedError(
                     "Model must implement make_preview_grid(preview_dict)"
@@ -309,21 +294,26 @@ class BaseTrainer:
                 # preview 保存
                 if self.global_step % self.cfg.preview_interval == 0:
 
-                    aa = outputs["aa"]
-                    bb = outputs["bb"]
+                    # ★ ModelOutput に対応（添字アクセス禁止）
+                    aa = outputs.aa
+                    bb = outputs.bb
 
+                    # batch は従来どおり
                     a_orig = batch_a[0]
                     b_orig = batch_b[0]
 
                     # ★ debug_utils に統一
-                    tensor_minmax("a_orig", a_orig)
-                    tensor_minmax("aa", aa)
-                    tensor_minmax("b_orig", b_orig)
-                    tensor_minmax("bb", bb)
+                    try:
+                        from app.utils.debug_utils import tensor_minmax
+                        tensor_minmax("a_orig", a_orig)
+                        tensor_minmax("aa", aa)
+                        tensor_minmax("b_orig", b_orig)
+                        tensor_minmax("bb", bb)
+                    except Exception:
+                        pass
 
                     try:
                         self.save_preview(outputs, batch_a, batch_b)
-
                     except Exception as e:
                         print(f"[Preview] Failed: {e}")
 

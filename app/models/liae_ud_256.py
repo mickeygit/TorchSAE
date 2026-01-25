@@ -2,8 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-# ★ preview_utils はここで読み込む（正しい位置）
 from app.utils.preview_utils import to_image_tensor, prepare_mask
+from app.utils.model_output import ModelOutput
+
+
 
 
 # ============================================================
@@ -256,11 +258,16 @@ class LIAE_UD_256(nn.Module):
         lm_a_pred = self.lm_head(lm_a_in)
         lm_b_pred = self.lm_head(lm_b_in)
 
-        return aa, bb, ab, ba, mask_a_pred, mask_b_pred, lm_a_pred, lm_b_pred
-
-    # ============================================================
-    # reset 系（変更なし）
-    # ============================================================
+        return ModelOutput(
+            aa=aa,
+            bb=bb,
+            ab=ab,
+            ba=ba,
+            mask_a_pred=mask_a_pred,
+            mask_b_pred=mask_b_pred,
+            lm_a_pred=lm_a_pred,
+            lm_b_pred=lm_b_pred,
+        )
 
     @torch.no_grad()
     def reset_decoder_A_out_block(self):
@@ -296,10 +303,6 @@ class LIAE_UD_256(nn.Module):
         for m in self.encoder.modules():
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
-
-    # ============================================================
-    # preview（preview_utils に完全準拠）
-    # ============================================================
 
     @torch.no_grad()
     def make_preview_grid(self, preview_dict):

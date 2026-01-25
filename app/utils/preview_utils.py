@@ -83,3 +83,58 @@ def save_preview(grid, save_path):
 
     # Save as PNG
     vutils.save_image(grid, str(save_path), nrow=grid.size(0), normalize=False)
+
+# app/utils/preview_utils.py
+
+import torch
+from app.utils.model_output import ModelOutput
+
+
+def to_image_tensor(x: torch.Tensor) -> torch.Tensor:
+    x = x.detach().float()
+
+    if x.dtype == torch.uint8:
+        x = x / 255.0
+
+    if x.ndim == 2:
+        x = x.unsqueeze(0)
+    if x.size(0) == 1:
+        x = x.repeat(3, 1, 1)
+
+    return x.clamp(0.0, 1.0)
+
+
+
+@torch.no_grad()
+def build_preview_dict(
+    outputs: ModelOutput,
+    batch_a,
+    batch_b,
+):
+    img_a, lm_a, _ = batch_a
+    img_b, lm_b, _ = batch_b
+
+    img_a_0 = img_a[0].detach().cpu()
+    img_b_0 = img_b[0].detach().cpu()
+
+    aa = outputs.aa[0].detach().cpu()
+    bb = outputs.bb[0].detach().cpu()
+    ab = outputs.ab[0].detach().cpu()
+    ba = outputs.ba[0].detach().cpu()
+
+    mask_a = torch.sigmoid(outputs.mask_a_pred[0]).detach().cpu()
+    mask_b = torch.sigmoid(outputs.mask_b_pred[0]).detach().cpu()
+
+    def to_01(x):
+        return x.float().clamp(0.0, 1.0)
+
+    return {
+        "a_orig": to_01(img_a_0),
+        "b_orig": to_01(img_b_0),
+        "aa": to_01(aa),
+        "bb": to_01(bb),
+        "ab": to_01(ab),
+        "ba": to_01(ba),
+        "mask_a": to_01(mask_a),
+        "mask_b": to_01(mask_b),
+    }
