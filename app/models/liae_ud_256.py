@@ -36,7 +36,6 @@ class ResidualBlock(nn.Module):
 class PSUpBlock(nn.Module):
     def __init__(self, in_ch, out_ch):
         super().__init__()
-        # in_ch -> 4*out_ch → PixelShuffle(2) → out_ch
         self.conv_ps = nn.Conv2d(in_ch, out_ch * 4, 3, padding=1)
         self.ps = nn.PixelShuffle(2)
         self.block = nn.Sequential(
@@ -53,8 +52,9 @@ class PSUpBlock(nn.Module):
 
 
 # ============================================================
-# Decoder / MaskDecoder（PixelShuffle + Residual）
+# Decoder / MaskDecoder
 # ============================================================
+
 class Decoder(nn.Module):
     def __init__(self, d_dims=768):
         super().__init__()
@@ -65,13 +65,12 @@ class Decoder(nn.Module):
         self.up3 = PSUpBlock(ch * 4, ch * 2)
         self.up4 = PSUpBlock(ch * 2, ch)
 
-        # 出力側のシャープさ強化（白かすみ軽減版）
         self.out_block = nn.Sequential(
             nn.Conv2d(ch, ch, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(ch, ch, 1),
             nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 3, 3, padding=1, bias=False),  # ★ bias を切る
+            nn.Conv2d(ch, 3, 3, padding=1, bias=False),  # ★ bias 切り
         )
 
     def forward(self, x):
@@ -107,7 +106,7 @@ class MaskDecoder(nn.Module):
 
 
 # ============================================================
-# DF-style encoder（dual latent, residual + sharpen 強化）
+# DF-style encoder
 # ============================================================
 
 class DFEncoder(nn.Module):
@@ -128,7 +127,6 @@ class DFEncoder(nn.Module):
 
         self.reduce = nn.Conv2d(ch * 8, ch * 8, 1)
 
-        # sharpen 強化（2層）
         self.sharpen = nn.Sequential(
             nn.Conv2d(ch * 8, ch * 8, 1),
             nn.LeakyReLU(0.1, inplace=True),
@@ -136,14 +134,13 @@ class DFEncoder(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
         )
 
-        # dual latent
         self.to_exp = nn.Sequential(
             nn.Conv2d(ch * 8, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
             nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
         )
-        self.to_id  = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
+        self.to_id = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
 
     def forward(self, x):
         x = self.down1(x)
@@ -165,7 +162,7 @@ class DFEncoder(nn.Module):
         x = self.sharpen(x)
 
         z_exp = self.to_exp(x)
-        z_id  = self.to_id(x)
+        z_id = self.to_id(x)
         return z_exp, z_id
 
 
@@ -191,7 +188,7 @@ class UniformDistribution(nn.Module):
 class LandmarkHead(nn.Module):
     def __init__(self, ae_dims=768):
         super().__init__()
-        in_ch = ae_dims * 2  # ★ z_id + z_exp を想定
+        in_ch = ae_dims * 2  # z_id + z_exp
 
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, 256, 3, padding=1),
@@ -207,7 +204,7 @@ class LandmarkHead(nn.Module):
 
 
 # ============================================================
-# LIAE_UD_256（dual latent 軽量強化版）
+# LIAE_UD_256
 # ============================================================
 
 class LIAE_UD_256(nn.Module):
@@ -227,31 +224,21 @@ class LIAE_UD_256(nn.Module):
         self.decoder_B = Decoder(d_dims=ae_dims)
         self.mask_decoder = MaskDecoder(d_mask_dims=ae_dims)
 
-        # ★ ae_dims*2 を前提にした LandmarkHead
         self.lm_head = LandmarkHead(ae_dims=ae_dims)
 
     def encode(self, x):
         z_exp, z_id = self.encoder(x)
 
-        # ★ z_exp は post_bn を通す（表情は揺れてOK）
         z_exp = self.post_bn(z_exp)
-
-        # ★ z_id は post_bn を通さない（identity の安定化）
-        # z_id = self.post_bn(z_id)
-        z_id = z_id
+        z_id = z_id  # identity はそのまま
 
         return z_exp, z_id
-
 
     def forward(self, img_a, img_b, lm_a=None, lm_b=None,
                 warp_prob=0.0, hsv_power=0.0, noise_power=0.0, shell_power=0.0):
 
         zA_exp, zA_id = self.encode(img_a)
         zB_exp, zB_id = self.encode(img_b)
-
-        # # ★ identity dropout（学習中だけ）
-        # if self.training:
-        #     zB_id = zB_id + torch.randn_like(zB_id) * 0.11
 
         # A→A / B→B
         aa = self.decoder_A(zA_exp)
@@ -267,7 +254,7 @@ class LIAE_UD_256(nn.Module):
         mask_a_pred = self.mask_decoder(zA_exp_ud)
         mask_b_pred = self.mask_decoder(zB_exp_ud)
 
-        # ★ landmarks は z_id + z_exp を concat して使う
+        # landmarks は z_id + z_exp を concat
         lm_a_in = torch.cat([zA_id, zA_exp], dim=1)
         lm_b_in = torch.cat([zB_id, zB_exp], dim=1)
         lm_a_pred = self.lm_head(lm_a_in)
@@ -282,18 +269,16 @@ class LIAE_UD_256(nn.Module):
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
 
-
     @torch.no_grad()
     def reset_decoder_B_out_block(self):
         print("=== Reset decoder_B.out_block parameters ===")
         for m in self.decoder_B.out_block.modules():
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
-        
+
     @torch.no_grad()
     def reset_encoder_id_block(self):
         print("=== Reset encoder identity block (down2/res2/down3/res3/down4/res4/reduce/sharpen/to_id/to_exp) ===")
-        # ここは既存のまま
         for m in self.encoder.down2.modules():
             if isinstance(m, nn.Conv2d):
                 m.reset_parameters()
@@ -335,16 +320,13 @@ class LIAE_UD_256(nn.Module):
     @torch.no_grad()
     def make_preview_grid(self, preview_dict):
         import torchvision.utils as vutils
-        import torch
 
-        # --- 値域補正 ---
         def to_float01(x):
+            # uint8 → 0〜1
             if x.dtype == torch.uint8:
                 x = x.float() / 255.0
             else:
                 x = x.float()
-                if x.max() > 1.5:
-                    x = x / 255.0
             return x.clamp(0.0, 1.0)
 
         a_orig = to_float01(preview_dict["a_orig"])
@@ -362,10 +344,9 @@ class LIAE_UD_256(nn.Module):
         if mask_b.ndim == 2:
             mask_b = mask_b.unsqueeze(0)
 
-        mask_a_rgb = mask_a.repeat(3, 1, 1)
-        mask_b_rgb = mask_b.repeat(3, 1, 1)
+        mask_a_rgb = mask_a.clamp(0, 1).repeat(3, 1, 1)
+        mask_b_rgb = mask_b.clamp(0, 1).repeat(3, 1, 1)
 
-        # normalize=False が絶対に正しい
         grid = vutils.make_grid(
             [
                 a_orig, aa, ab, mask_a_rgb,
@@ -374,5 +355,6 @@ class LIAE_UD_256(nn.Module):
             nrow=4,
             normalize=False,
         )
+        grid = grid.clamp(0.0, 1.0)  # ★ 最終白飛び防止
 
         return grid
