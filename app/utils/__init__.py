@@ -12,6 +12,9 @@ from .debug_utils import (
     tensor_minmax,
     tensor_stats,
     check_nan_inf,
+    debug_latents,
+    debug_decoder,
+    debug_swap_quality,
 )
 
 from .model_output import ModelOutput
@@ -24,5 +27,8 @@ __all__ = [
     "tensor_minmax",
     "tensor_stats",
     "check_nan_inf",
+    "debug_latents",
+    "debug_decoder",
+    "debug_swap_quality",
     "ModelOutput",
 ]

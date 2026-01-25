@@ -133,6 +133,10 @@ class TrainerLIAE(BaseTrainer):
         for g in self.opt.param_groups:
             g["lr"] = lr
 
+        # ★ LIAE_UD_256 側の debug_latents / debug_decoder 用に step を渡す
+        if hasattr(self.model, "global_step"):
+            self.model.global_step = self.global_step
+
         with torch.cuda.amp.autocast(enabled=self.cfg.amp):
             outputs: ModelOutput = self.model(
                 img_a, img_b, lm_a, lm_b,

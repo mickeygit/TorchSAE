@@ -294,23 +294,27 @@ class BaseTrainer:
                 # preview 保存
                 if self.global_step % self.cfg.preview_interval == 0:
 
-                    # ★ ModelOutput に対応（添字アクセス禁止）
                     aa = outputs.aa
                     bb = outputs.bb
+                    ab = outputs.ab
+                    ba = outputs.ba
 
-                    # batch は従来どおり
                     a_orig = batch_a[0]
                     b_orig = batch_b[0]
 
-                    # ★ debug_utils に統一
-                    try:
-                        from app.utils.debug_utils import tensor_minmax
-                        tensor_minmax("a_orig", a_orig)
-                        tensor_minmax("aa", aa)
-                        tensor_minmax("b_orig", b_orig)
-                        tensor_minmax("bb", bb)
-                    except Exception:
-                        pass
+                    from app.utils.debug_utils import tensor_minmax, debug_swap_quality
+
+                    tensor_minmax("a_orig", a_orig)
+                    tensor_minmax("aa", aa)
+                    tensor_minmax("b_orig", b_orig)
+                    tensor_minmax("bb", bb)
+
+                    # ★ SWAP の質を数値で確認
+                    debug_swap_quality(
+                        self.global_step,
+                        ab, ba,
+                        a_orig, b_orig
+                    )
 
                     try:
                         self.save_preview(outputs, batch_a, batch_b)
