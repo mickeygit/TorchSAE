@@ -102,6 +102,11 @@ class TrainerLIAE(BaseTrainer):
             landmark_w = self._get_auto_value("landmark_weight") or self.cfg.landmark_loss_weight
             clip_grad = self._get_auto_value("clip_grad") or self.cfg.clip_grad
 
+            # ★ expr_w も auto 対応（なければ cfg かデフォルト 2.0）
+            expr_w = self._get_auto_value("expr_weight")
+            if expr_w is None:
+                expr_w = float(getattr(self.cfg, "expr_loss_weight", 2.0))
+
             warp_prob = self._get_auto_value("warp_prob")
             if warp_prob is None:
                 warp_prob = float(self.cfg.random_warp)
@@ -124,6 +129,9 @@ class TrainerLIAE(BaseTrainer):
             )
             landmark_w = self.cfg.landmark_loss_weight
             clip_grad = self.cfg.clip_grad
+
+            # ★ 非 auto 時は cfg.expr_loss_weight があれば使い、なければ 2.0
+            expr_w = float(getattr(self.cfg, "expr_loss_weight", 2.0))
 
             warp_prob = float(self.cfg.random_warp)
             hsv_power = float(self.cfg.random_hsv_power)
@@ -155,6 +163,7 @@ class TrainerLIAE(BaseTrainer):
                 self.bce,
                 float(mask_w),
                 float(landmark_w),
+                float(expr_w),   # ★ 追加
             )
 
             loss = loss_dict_raw["total"]
@@ -174,9 +183,11 @@ class TrainerLIAE(BaseTrainer):
             "recon": loss_dict_raw["recon"].item(),
             "mask": loss_dict_raw["mask"].item(),
             "landmark": loss_dict_raw["landmark"].item(),
+            "expr": loss_dict_raw["expr"].item(),          # ★ 追加
             "lr": float(lr),
             "mask_w": float(mask_w),
             "landmark_w": float(landmark_w),
+            "expr_w": float(expr_w),                       # ★ 追加
             "clip_grad": float(clip_grad),
             "warp_prob": float(warp_prob),
             "hsv_power": float(hsv_power),
