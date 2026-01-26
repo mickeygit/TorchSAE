@@ -1,14 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 from app.utils.preview_utils import to_image_tensor, prepare_mask
 from app.utils.model_output import ModelOutput
-from app.utils.debug_utils import (
-    debug_latents,
-    debug_decoder,
-)
-
 
 # ============================================================
 # 基本ブロック
@@ -22,7 +16,6 @@ def conv_block(in_ch, out_ch):
         nn.LeakyReLU(0.1, inplace=True),
     )
 
-
 class ResidualBlock(nn.Module):
     def __init__(self, ch):
         super().__init__()
@@ -35,9 +28,8 @@ class ResidualBlock(nn.Module):
     def forward(self, x):
         return F.leaky_relu(x + self.block(x), 0.1, inplace=True)
 
-
 # ============================================================
-# PixelShuffle-based UpBlock
+# PixelShuffle UpBlock
 # ============================================================
 
 class PSUpBlock(nn.Module):
@@ -57,9 +49,8 @@ class PSUpBlock(nn.Module):
         x = self.block(x)
         return x
 
-
 # ============================================================
-# Decoder / MaskDecoder
+# Decoder（EXP 強化版）
 # ============================================================
 
 class Decoder(nn.Module):
@@ -72,21 +63,45 @@ class Decoder(nn.Module):
         self.up3 = PSUpBlock(ch * 4, ch * 2)
         self.up4 = PSUpBlock(ch * 2, ch)
 
-        self.out_block = nn.Sequential(
-            nn.Conv2d(ch, ch, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, ch, 1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 3, 3, padding=1, bias=False),
+        # EXP ゲート（強化）
+        self.exp_gate1 = nn.Sequential(
+            nn.Conv2d(d_dims, d_dims, 1),
+            nn.Sigmoid()
+        )
+        self.exp_gate2 = nn.Sequential(
+            nn.Conv2d(d_dims, ch * 8, 1),
+            nn.Sigmoid()
         )
 
-    def forward(self, x):
+    def forward(self, x, z_exp):
+
+        if z_exp.shape[2:] != x.shape[2:]:
+            z_exp = F.interpolate(z_exp, size=x.shape[2:], mode="nearest")
+
+        # ★ ゲート強度 2.0
+        gate1 = self.exp_gate1(z_exp)
+        x = x * (1.0 + gate1 * 2.0)
+
+        # ★ EXP 注入 3.0
+        x = x + z_exp * 3.0
+
         x = self.up1(x)
+
+        gate2 = self.exp_gate2(z_exp)
+        if gate2.shape[2:] != x.shape[2:]:
+            gate2 = F.interpolate(gate2, size=x.shape[2:], mode="nearest")
+
+        x = x * (1.0 + gate2 * 2.0)
+
         x = self.up2(x)
         x = self.up3(x)
         x = self.up4(x)
-        return self.out_block(x)
 
+        return x
+
+# ============================================================
+# MaskDecoder（同じ強化）
+# ============================================================
 
 class MaskDecoder(nn.Module):
     def __init__(self, d_mask_dims=768):
@@ -98,22 +113,39 @@ class MaskDecoder(nn.Module):
         self.up3 = PSUpBlock(ch * 4, ch * 2)
         self.up4 = PSUpBlock(ch * 2, ch)
 
-        self.out_block = nn.Sequential(
-            nn.Conv2d(ch, ch, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(ch, 1, 3, padding=1),
+        self.exp_gate1 = nn.Sequential(
+            nn.Conv2d(d_mask_dims, d_mask_dims, 1),
+            nn.Sigmoid()
+        )
+        self.exp_gate2 = nn.Sequential(
+            nn.Conv2d(d_mask_dims, ch * 8, 1),
+            nn.Sigmoid()
         )
 
-    def forward(self, x):
+    def forward(self, x, z_exp):
+
+        if z_exp.shape[2:] != x.shape[2:]:
+            z_exp = F.interpolate(z_exp, size=x.shape[2:], mode="nearest")
+
+        x = x * (1.0 + self.exp_gate1(z_exp) * 2.0)
+        x = x + z_exp * 3.0
+
         x = self.up1(x)
+
+        gate2 = self.exp_gate2(z_exp)
+        if gate2.shape[2:] != x.shape[2:]:
+            gate2 = F.interpolate(gate2, size=x.shape[2:], mode="nearest")
+
+        x = x * (1.0 + gate2 * 2.0)
+
         x = self.up2(x)
         x = self.up3(x)
         x = self.up4(x)
-        return self.out_block(x)
 
+        return x
 
 # ============================================================
-# DF-style encoder
+# DFEncoder（浅層 EXP 分岐）
 # ============================================================
 
 class DFEncoder(nn.Module):
@@ -141,37 +173,44 @@ class DFEncoder(nn.Module):
             nn.LeakyReLU(0.1, inplace=True),
         )
 
-        self.to_exp = nn.Sequential(
-            nn.Conv2d(ch * 8, ae_dims, 3, padding=1),
+        # ★ EXP は浅層（down3）から
+        self.to_exp_shallow = nn.Sequential(
+            nn.Conv2d(ch * 4, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
+            ResidualBlock(ae_dims),
             nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
         )
-        self.to_id = nn.Conv2d(ch * 8, ae_dims, 3, padding=1)
+
+        self.to_id = nn.Sequential(
+            nn.Conv2d(ch * 8, ae_dims, 1),
+        )
 
     def forward(self, x):
-        x = self.down1(x)
-        x = self.pool(x)
+        x1 = self.down1(x)
+        x1p = self.pool(x1)
 
-        x = self.down2(x)
-        x = self.res2(x)
-        x = self.pool(x)
+        x2 = self.down2(x1p)
+        x2r = self.res2(x2)
+        x2p = self.pool(x2r)
 
-        x = self.down3(x)
-        x = self.res3(x)
-        x = self.pool(x)
+        x3 = self.down3(x2p)
+        x3r = self.res3(x3)
+        x3p = self.pool(x3r)
 
-        x = self.down4(x)
-        x = self.res4(x)
-        x = self.pool(x)
+        x4 = self.down4(x3p)
+        x4r = self.res4(x4)
+        x4p = self.pool(x4r)
 
-        x = self.reduce(x)
-        x = self.sharpen(x)
+        # ID（深層）
+        x_id = self.reduce(x4p)
+        x_id = self.sharpen(x_id)
+        z_id = self.to_id(x_id)
 
-        z_exp = self.to_exp(x)
-        z_id = self.to_id(x)
+        # EXP（浅層）
+        z_exp = self.to_exp_shallow(x3r)
+
         return z_exp, z_id
-
 
 # ============================================================
 # UD
@@ -187,96 +226,69 @@ class UniformDistribution(nn.Module):
         std = x.std(dim=[2, 3], keepdim=True) + self.eps
         return (x - mean) / (std * 0.8 + self.eps)
 
-
 # ============================================================
-# Landmark head
-# ============================================================
-
-class LandmarkHead(nn.Module):
-    def __init__(self, ae_dims=768):
-        super().__init__()
-        in_ch = ae_dims * 2
-
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, 256, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-            nn.Conv2d(256, 136, 1),
-        )
-
-    def forward(self, z):
-        out = self.net(z)
-        N = out.size(0)
-        out = out.mean(dim=[2, 3])
-        return out.view(N, 68, 2)
-
-
-# ============================================================
-# LIAE_UD_256
+# LIAE_UD_256（EXP 強化微調整版）
 # ============================================================
 
 class LIAE_UD_256(nn.Module):
-    def __init__(self, e_dims=256, ae_dims=768, d_dims=256, d_mask_dims=256):
+    def __init__(self, e_dims=256, ae_dims=768):
         super().__init__()
 
-        self.encoder = DFEncoder(e_dims=e_dims, ae_dims=ae_dims)
+        self.id_encoder = DFEncoder(e_dims=e_dims, ae_dims=ae_dims)
+        self.ud = UniformDistribution()
 
-        self.post_bn = nn.Sequential(
-            nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
-            nn.LeakyReLU(0.1, inplace=True),
-        )
+        self.decoder_A = Decoder(d_dims=ae_dims * 2)
+        self.decoder_B = Decoder(d_dims=ae_dims * 2)
+        self.mask_decoder = MaskDecoder(d_mask_dims=ae_dims * 2)
 
-        self.ud = UniformDistribution(eps=1e-6)
-
-        self.decoder_A = Decoder(d_dims=ae_dims)
-        self.decoder_B = Decoder(d_dims=ae_dims)
-        self.mask_decoder = MaskDecoder(d_mask_dims=ae_dims)
-
-        self.lm_head = LandmarkHead(ae_dims=ae_dims)
-
-        # Trainer が毎 step 更新する
-        self.global_step = 0
+        # ★ EXP を強く（6.0）
+        self.exp_gain = 6.0
+        self.id_scale = 0.1
+        self.id_inject_gain = 0.2
 
     def encode(self, x):
-        z_exp, z_id = self.encoder(x)
-        z_exp = self.post_bn(z_exp)
+        z_exp_raw, z_id_raw = self.id_encoder(x)
 
-        # ★ デバッグ：latent の分離度
-        debug_latents(self.global_step, z_exp, z_id)
+        z_exp = F.interpolate(z_exp_raw, size=(16, 16), mode="area")
+
+        z_id = z_id_raw * self.id_scale
+
+        z_exp = self.ud(z_exp)
+        z_id  = self.ud(z_id)
+
+        # ★ EXP 強化
+        z_exp = z_exp * self.exp_gain
 
         return z_exp, z_id
 
-    def forward(self, img_a, img_b, lm_a=None, lm_b=None,
-                warp_prob=0.0, hsv_power=0.0, noise_power=0.0, shell_power=0.0):
+    def forward(self, img_a, img_b):
 
         zA_exp, zA_id = self.encode(img_a)
         zB_exp, zB_id = self.encode(img_b)
 
-        aa = self.decoder_A(zA_exp)
-        bb = self.decoder_B(zB_id)
+        zA_id = zA_id + zA_exp * self.id_inject_gain
+        zB_id = zB_id + zB_exp * self.id_inject_gain
 
-        ab = self.decoder_B(zA_exp)
-        ba = self.decoder_A(zB_exp)
+        zA_full = torch.cat([zA_id, zA_exp], dim=1)
+        zB_full = torch.cat([zB_id, zB_exp], dim=1)
 
-        # ★ デバッグ：decoder の出力
-        debug_decoder(self.global_step, aa, ab, ba)
+        zA_exp_full = torch.cat([zA_exp, zA_exp], dim=1)
+        zB_exp_full = torch.cat([zB_exp, zB_exp], dim=1)
 
-        zA_exp_ud = self.ud(zA_exp)
-        zB_exp_ud = self.ud(zB_exp)
-        mask_a_pred = self.mask_decoder(zA_exp_ud)
-        mask_b_pred = self.mask_decoder(zB_exp_ud)
+        aa = self.decoder_A(zA_full, zA_exp_full)
+        bb = self.decoder_B(zB_full, zB_exp_full)
 
-        lm_a_in = torch.cat([zA_id, zA_exp], dim=1)
-        lm_b_in = torch.cat([zB_id, zB_exp], dim=1)
-        lm_a_pred = self.lm_head(lm_a_in)
-        lm_b_pred = self.lm_head(lm_b_in)
+        ab_full = torch.cat([zB_id, zA_exp], dim=1)
+        ba_full = torch.cat([zA_id, zB_exp], dim=1)
+
+        ab = self.decoder_B(ab_full, zA_exp_full)
+        ba = self.decoder_A(ba_full, zB_exp_full)
+
+        mask_a_pred = self.mask_decoder(zA_full, zA_exp_full)
+        mask_b_pred = self.mask_decoder(zB_full, zB_exp_full)
 
         return ModelOutput(
-            aa=aa,
-            bb=bb,
-            ab=ab,
-            ba=ba,
+            aa=aa, bb=bb, ab=ab, ba=ba,
             mask_a_pred=mask_a_pred,
             mask_b_pred=mask_b_pred,
-            lm_a_pred=lm_a_pred,
-            lm_b_pred=lm_b_pred,
         )

@@ -6,6 +6,44 @@ import torch
 from torch.cuda.amp import GradScaler
 import torch.nn as nn
 
+from torchvision.utils import save_image
+
+
+# ================================
+# 決着テスト（EXP に A の表情があるか判定）
+# ================================
+from torchvision.utils import save_image
+from app.utils.preview_utils import to_image_tensor
+
+@torch.no_grad()
+def decisive_exp_test(trainer, img_a_raw, img_b_raw):
+    model = trainer.model
+    device = trainer.device
+
+    # preview_dict から来る a_orig / b_orig を tensor 化
+    img_a = to_image_tensor(img_a_raw).unsqueeze(0).to(device)
+    img_b = to_image_tensor(img_b_raw).unsqueeze(0).to(device)
+
+    # ★ encode() を通して「本番と同じ EXP」を取る
+    zA_exp, _ = model.encode(img_a)
+    zB_exp, _ = model.encode(img_b)
+
+    # ID はゼロ固定
+    z_id = torch.zeros_like(zA_exp)
+
+    out_Aexp = model.decoder_B(
+        torch.cat([z_id, zA_exp], dim=1),
+        torch.cat([zA_exp, zA_exp], dim=1),
+    )
+
+    out_Bexp = model.decoder_B(
+        torch.cat([z_id, zB_exp], dim=1),
+        torch.cat([zB_exp, zB_exp], dim=1),
+    )
+
+    return out_Aexp, out_Bexp
+
+
 
 class BaseTrainer:
     def __init__(self, cfg):
@@ -35,6 +73,7 @@ class BaseTrainer:
         try:
             preview_dict = self.make_preview(outputs, batch_a, batch_b)
 
+
             if not hasattr(self.model, "make_preview_grid"):
                 raise NotImplementedError(
                     "Model must implement make_preview_grid(preview_dict)"
@@ -50,6 +89,8 @@ class BaseTrainer:
             )
             vutils.save_image(grid, preview_path, normalize=False)
             print(f"[Preview] Saved: {preview_path}")
+
+            return preview_dict # ★ これを追加
 
         except Exception as e:
             print(f"[Preview] Failed: {e}")
@@ -299,8 +340,9 @@ class BaseTrainer:
                     ab = outputs.ab
                     ba = outputs.ba
 
-                    a_orig = batch_a[0]
-                    b_orig = batch_b[0]
+                    # ★ GPU に移動
+                    a_orig = batch_a[0].to(self.device)
+                    b_orig = batch_b[0].to(self.device)
 
                     from app.utils.debug_utils import tensor_minmax, debug_swap_quality
 
@@ -309,17 +351,55 @@ class BaseTrainer:
                     tensor_minmax("b_orig", b_orig)
                     tensor_minmax("bb", bb)
 
-                    # ★ SWAP の質を数値で確認
-                    debug_swap_quality(
-                        self.global_step,
-                        ab, ba,
-                        a_orig, b_orig
-                    )
-
+                    # ★ SWAP デバッグは try で囲む
                     try:
-                        self.save_preview(outputs, batch_a, batch_b)
+                        debug_swap_quality(
+                            self.global_step,
+                            ab, ba,
+                            a_orig, b_orig
+                        )
+                    except Exception as e:
+                        print(f"[SWAP] failed ({e})")
+
+
+                    # ★ preview 保存は必ず実行
+                    try:
+                        preview_dict = self.save_preview(outputs, batch_a, batch_b)
+
+                        # ================================
+                        # EXP 決着テスト（encode() を通す正しい形）
+                        # ================================
+                        img_a = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0).to(self.device)
+                        img_b = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0).to(self.device)
+
+                        # ★ encode() を通して「学習時と同じ EXP」を取得
+                        zA_exp, _ = self.model.encode(img_a)
+                        zB_exp, _ = self.model.encode(img_b)
+
+                        # ID はゼロ固定
+                        z_id = torch.zeros_like(zA_exp)
+
+                        # A の EXP だけを使った出力
+                        out_Aexp = self.model.decoder_B(
+                            torch.cat([z_id, zA_exp], dim=1),
+                            torch.cat([zA_exp, zA_exp], dim=1),
+                        )
+
+                        # B の EXP だけを使った出力
+                        out_Bexp = self.model.decoder_B(
+                            torch.cat([z_id, zB_exp], dim=1),
+                            torch.cat([zB_exp, zB_exp], dim=1),
+                        )
+
+                        save_image(out_Aexp, f"{self.save_dir}/exp_Aexp.png")
+                        save_image(out_Bexp, f"{self.save_dir}/exp_Bexp.png")
+
+                        print("[DecisiveEXP] Saved exp_Aexp.png / exp_Bexp.png")
+
                     except Exception as e:
                         print(f"[Preview] Failed: {e}")
+
+
 
         except KeyboardInterrupt:
             print("\n[Exit] Caught Ctrl+C, saving final checkpoint...")
