@@ -6,14 +6,52 @@ import torch
 from torch.cuda.amp import GradScaler
 import torch.nn as nn
 
+from torchvision.utils import save_image
+
+
+# ================================
+# 決着テスト（EXP に A の表情があるか判定）
+# ================================
+from torchvision.utils import save_image
+from app.utils.preview_utils import to_image_tensor
+
+@torch.no_grad()
+def decisive_exp_test(trainer, img_a_raw, img_b_raw):
+    model = trainer.model
+    device = trainer.device
+
+    # preview_dict から来る a_orig / b_orig を tensor 化
+    img_a = to_image_tensor(img_a_raw).unsqueeze(0).to(device)
+    img_b = to_image_tensor(img_b_raw).unsqueeze(0).to(device)
+
+    # ★ encode() を通して「本番と同じ EXP」を取る
+    zA_exp, _ = model.encode(img_a)
+    zB_exp, _ = model.encode(img_b)
+
+    # ID はゼロ固定
+    z_id = torch.zeros_like(zA_exp)
+
+    out_Aexp = model.decoder_B(
+        torch.cat([z_id, zA_exp], dim=1),
+        torch.cat([zA_exp, zA_exp], dim=1),
+    )
+
+    out_Bexp = model.decoder_B(
+        torch.cat([z_id, zB_exp], dim=1),
+        torch.cat([zB_exp, zB_exp], dim=1),
+    )
+
+    return out_Aexp, out_Bexp
+
+
 
 class BaseTrainer:
     def __init__(self, cfg):
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.model = None          # 子クラスでセット
-        self.opt = None            # 子クラスでセット
+        self.model = None
+        self.opt = None
         self.scaler = GradScaler(enabled=cfg.amp)
 
         self.global_step = 0
@@ -22,35 +60,56 @@ class BaseTrainer:
         self.save_dir = cfg.save_dir
         os.makedirs(self.save_dir, exist_ok=True)
 
-    # ---------------------------------------------------------
-    # 子クラスで実装する必要があるメソッド
-    # ---------------------------------------------------------
     def train_step(self, batch_a, batch_b):
-        """
-        1 step 分の学習を行う。
-        戻り値:
-          loss_dict, outputs
-        """
         raise NotImplementedError
 
+    def make_preview(self, outputs, batch_a, batch_b):
+        raise NotImplementedError(
+            "Trainer must implement make_preview() and return preview_dict"
+        )
+
+    @torch.no_grad()
+    def save_preview(self, outputs, batch_a, batch_b, suffix=""):
+        try:
+            preview_dict = self.make_preview(outputs, batch_a, batch_b)
+
+
+            if not hasattr(self.model, "make_preview_grid"):
+                raise NotImplementedError(
+                    "Model must implement make_preview_grid(preview_dict)"
+                )
+
+            grid = self.model.make_preview_grid(preview_dict)
+
+            import torchvision.utils as vutils
+
+            preview_path = os.path.join(
+                self.save_dir,
+                f"preview_{self.global_step}{suffix}.png"
+            )
+            vutils.save_image(grid, preview_path, normalize=False)
+            print(f"[Preview] Saved: {preview_path}")
+
+            return preview_dict # ★ これを追加
+
+        except Exception as e:
+            print(f"[Preview] Failed: {e}")
+
     # ---------------------------------------------------------
-    # checkpoint 保存 / ロード
+    # checkpoint 保存 / ロード（変更なし）
     # ---------------------------------------------------------
     def _save_checkpoint(self):
-        # 保存する state
         state = {
             "step": self.global_step,
             "model": self.model.state_dict(),
             "optimizer": self.opt.state_dict(),
         }
 
-        # ★ 本家風＋構造情報入りのファイル名を生成
         model_type = getattr(self.cfg, "model_type", "model").upper()
         model_size = getattr(self.cfg, "model_size", 128)
         ae_dims = getattr(self.cfg, "ae_dims", 512)
         d_dims = getattr(self.cfg, "d_dims", 128)
         d_mask_dims = getattr(self.cfg, "d_mask_dims", 128)
-        target_steps = getattr(self.cfg, "target_steps", None)
 
         filename = (
             f"{model_type}_{model_size}_ae{ae_dims}_d{d_dims}_"
@@ -58,39 +117,32 @@ class BaseTrainer:
         )
         path = os.path.join(self.save_dir, filename)
 
-        # 保存
         torch.save(state, path)
         print(f"[Save] Saved checkpoint: {path}")
 
-        # ★ 古い checkpoint を削除（最新2個だけ残す）
+        # 古い checkpoint 削除
         ckpts = sorted(
             [f for f in os.listdir(self.save_dir) if f.endswith(".pth")],
             key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
         )
-
         if len(ckpts) > 2:
-            old_ckpts = ckpts[:-2]
-            for f in old_ckpts:
+            for f in ckpts[:-2]:
                 try:
                     os.remove(os.path.join(self.save_dir, f))
-                    print(f"[Cleanup] Removed old checkpoint: {f}")
-                except Exception as e:
-                    print(f"[Cleanup] Failed to remove {f}: {e}")
+                except:
+                    pass
 
-        # ★ preview の自動削除（最新5個だけ残す）
+        # 古い preview 削除
         previews = sorted(
             [f for f in os.listdir(self.save_dir) if f.startswith("preview_")],
             key=lambda x: os.path.getmtime(os.path.join(self.save_dir, x))
         )
-
         if len(previews) > 5:
-            old_previews = previews[:-5]
-            for f in old_previews:
+            for f in previews[:-5]:
                 try:
                     os.remove(os.path.join(self.save_dir, f))
-                    print(f"[Cleanup] Removed old preview: {f}")
-                except Exception as e:
-                    print(f"[Cleanup] Failed to remove preview {f}: {e}")
+                except:
+                    pass
 
     def _load_resume(self):
         if getattr(self.cfg, "resume_path", None) is None:
@@ -104,44 +156,18 @@ class BaseTrainer:
         print(f"[Resume] Loading checkpoint: {resume_path}")
         state = torch.load(resume_path, map_location=self.device)
 
-        # ★ モデルは strict=False で部分ロード（lm_head 追加などに対応）
         self.model.load_state_dict(state["model"], strict=False)
 
         if "optimizer" in state:
             try:
                 self.opt.load_state_dict(state["optimizer"])
-            except Exception:
+            except:
                 print("[Warn] Optimizer state mismatch. Skipping optimizer state.")
 
-        # step は引き継ぐ
         if "step" in state:
             self.global_step = state["step"]
             print(f"[Resume] Resumed from step {self.global_step}")
 
-    @torch.no_grad()
-    def save_preview(self, outputs, batch_a, batch_b, suffix=""):
-        """
-        preview_dict → model.make_preview_grid() → PNG 保存
-        に完全統一された経路。
-        """
-        try:
-            preview = self.make_preview(outputs, batch_a, batch_b)
-
-            # モデル側の統一 preview 関数を使う
-            grid = self.model.make_preview_grid(preview)
-
-            import torchvision.utils as vutils
-            import os
-
-            preview_path = os.path.join(
-                self.save_dir,
-                f"preview_{self.global_step}{suffix}.png"  # ★ PNG 保存
-            )
-            vutils.save_image(grid, preview_path)
-            print(f"[Preview] Saved: {preview_path}")
-
-        except Exception as e:
-            print(f"[Preview] Failed: {e}")
 
     # ---------------------------------------------------------
     # メインループ
@@ -309,23 +335,71 @@ class BaseTrainer:
                 # preview 保存
                 if self.global_step % self.cfg.preview_interval == 0:
 
-                    aa = outputs["aa"]
-                    bb = outputs["bb"]
+                    aa = outputs.aa
+                    bb = outputs.bb
+                    ab = outputs.ab
+                    ba = outputs.ba
 
-                    a_orig = batch_a[0]
-                    b_orig = batch_b[0]
+                    # ★ GPU に移動
+                    a_orig = batch_a[0].to(self.device)
+                    b_orig = batch_b[0].to(self.device)
 
-                    print(f"[DEBUG] step={self.global_step} a_orig min={a_orig.min().item():.3f} max={a_orig.max().item():.3f}")
-                    print(f"[DEBUG] step={self.global_step} aa     min={aa.min().item():.3f} max={aa.max().item():.3f}")
+                    from app.utils.debug_utils import tensor_minmax, debug_swap_quality
 
-                    print(f"[DEBUG] step={self.global_step} b_orig min={b_orig.min().item():.3f} max={b_orig.max().item():.3f}")
-                    print(f"[DEBUG] step={self.global_step} bb     min={bb.min().item():.3f} max={bb.max().item():.3f}")
+                    tensor_minmax("a_orig", a_orig)
+                    tensor_minmax("aa", aa)
+                    tensor_minmax("b_orig", b_orig)
+                    tensor_minmax("bb", bb)
 
+                    # ★ SWAP デバッグは try で囲む
                     try:
-                        self.save_preview(outputs, batch_a, batch_b)
+                        debug_swap_quality(
+                            self.global_step,
+                            ab, ba,
+                            a_orig, b_orig
+                        )
+                    except Exception as e:
+                        print(f"[SWAP] failed ({e})")
+
+
+                    # ★ preview 保存は必ず実行
+                    try:
+                        preview_dict = self.save_preview(outputs, batch_a, batch_b)
+
+                        # ================================
+                        # EXP 決着テスト（encode() を通す正しい形）
+                        # ================================
+                        img_a = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0).to(self.device)
+                        img_b = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0).to(self.device)
+
+                        # ★ encode() を通して「学習時と同じ EXP」を取得
+                        zA_exp, _ = self.model.encode(img_a)
+                        zB_exp, _ = self.model.encode(img_b)
+
+                        # ID はゼロ固定
+                        z_id = torch.zeros_like(zA_exp)
+
+                        # A の EXP だけを使った出力
+                        out_Aexp = self.model.decoder_B(
+                            torch.cat([z_id, zA_exp], dim=1),
+                            torch.cat([zA_exp, zA_exp], dim=1),
+                        )
+
+                        # B の EXP だけを使った出力
+                        out_Bexp = self.model.decoder_B(
+                            torch.cat([z_id, zB_exp], dim=1),
+                            torch.cat([zB_exp, zB_exp], dim=1),
+                        )
+
+                        save_image(out_Aexp, f"{self.save_dir}/exp_Aexp.png")
+                        save_image(out_Bexp, f"{self.save_dir}/exp_Bexp.png")
+
+                        print("[DecisiveEXP] Saved exp_Aexp.png / exp_Bexp.png")
 
                     except Exception as e:
                         print(f"[Preview] Failed: {e}")
+
+
 
         except KeyboardInterrupt:
             print("\n[Exit] Caught Ctrl+C, saving final checkpoint...")
