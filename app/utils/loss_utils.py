@@ -56,3 +56,24 @@ def compute_total_loss(
         "landmark": lm,
         "expr": expr,
     }
+
+def recon_loss_fn(loss_fn, outputs: ModelOutput, img_a, img_b, lm_a, lm_b):
+    loss_aa = loss_fn(outputs.aa, img_a, lm_a)
+    loss_bb = loss_fn(outputs.bb, img_b, lm_b)
+
+    # ★ EXP-only 再構成（EXP を育てるための弱い圧力）
+    loss_aa_exp_only = loss_fn(outputs.aa_exp_only, img_a, lm_a) * 0.1
+    loss_bb_exp_only = loss_fn(outputs.bb_exp_only, img_b, lm_b) * 0.1
+
+    # ★ ab/ba の弱い再構成（ID と画質を戻す）
+    loss_ab = loss_fn(outputs.ab, img_b, lm_b) * 0.1
+    loss_ba = loss_fn(outputs.ba, img_a, lm_a) * 0.1
+
+    return (
+        loss_aa
+        + loss_bb
+        + loss_aa_exp_only
+        + loss_bb_exp_only
+        + loss_ab
+        + loss_ba
+    )

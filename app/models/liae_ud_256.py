@@ -87,7 +87,7 @@ class Decoder(nn.Module):
             z_exp = F.interpolate(z_exp, size=x.shape[2:], mode="nearest")
 
         # ★ EXP の強度を弱める（3.0 → 1.0）
-        x = x + z_exp * 1.0
+        x = x + z_exp * 0.5
 
         # ★ ゲートの強度も弱める（2.0 → 1.0）
         gate1 = self.exp_gate1(z_exp)
@@ -200,7 +200,7 @@ class DFEncoder(nn.Module):
         self.to_id = nn.Conv2d(ch * 8, ae_dims, 1)
 
         # -------------------------
-        # EXP head（浅層＋高周波差分）
+        # EXP head（浅層）
         # -------------------------
         self.to_exp_shallow = nn.Sequential(
             nn.Conv2d(ch * 4, ae_dims, 3, padding=1),
@@ -209,6 +209,12 @@ class DFEncoder(nn.Module):
             nn.Conv2d(ae_dims, ae_dims, 3, padding=1),
             nn.LeakyReLU(0.1, inplace=True),
         )
+
+        # -------------------------
+        # UD（EXP 用に弱める）
+        # -------------------------
+        self.ud = UniformDistributionEXP()
+
 
     def forward(self, x):
         # -------------------------
@@ -222,7 +228,7 @@ class DFEncoder(nn.Module):
         x2p = self.pool(x2r)
 
         x3 = self.down3(x2p)
-        x3r = self.res3(x3)        # ← 浅層特徴（64×64）
+        x3r = self.res3(x3)        # ← EXP の主成分（64×64）
         x3p = self.pool(x3r)
 
         x4 = self.down4(x3p)
@@ -237,18 +243,48 @@ class DFEncoder(nn.Module):
         z_id = self.to_id(x_id)    # [B,768,16,16]
 
         # -------------------------
-        # EXP（浅層＋高周波差分）
+        # EXP（浅層：x3r を直接使う）
         # -------------------------
-        # 1) ぼかし（低周波）
-        blur = F.avg_pool2d(x3r, kernel_size=5, stride=1, padding=2)
+        z_exp_64 = self.to_exp_shallow(x3r)   # [B,768,64,64]
 
-        # 2) 高周波差分（表情の局所変化だけ残す）
-        high = x3r - blur
+        # EXP 正規化（弱め）
+        z_exp_64 = self.ud(z_exp_64)
 
-        # 3) EXP head に通す
-        z_exp = self.to_exp_shallow(high)   # [B,768,64,64]
+        return z_exp_64, z_id
 
-        return z_exp, z_id
+class ExpAutoNorm(nn.Module):
+    """
+    EXP の振幅を自動調整して decoder の白飛びを防ぐ。
+    入力 EXP の標準偏差を測り、ターゲット値に合わせてスケールする。
+    """
+    def __init__(self, target_std=0.5, eps=1e-6):
+        super().__init__()
+        self.target_std = target_std
+        self.eps = eps
+
+    def forward(self, z):
+        # 現在の EXP の標準偏差
+        mean = z.mean(dim=[1,2,3], keepdim=True)
+        z = z - mean                      # ★ 追加：EXP のバイアスを除去
+
+        std = z.std(dim=[1,2,3], keepdim=True) + self.eps
+        scale = self.target_std / std
+        scale = scale.clamp(0.1, 10.0)
+        return z * scale
+
+# ============================================================
+# EXP 用に弱めた UD（EXP-only の振幅を潰さない）
+# ============================================================
+class UniformDistributionEXP(nn.Module):
+    def __init__(self, eps=1e-6):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, x):
+        mean = x.mean(dim=[2, 3], keepdim=True)
+        std = x.std(dim=[2, 3], keepdim=True) + self.eps
+        return (x - mean) / (std * 1.5 + self.eps)
+
 
 # ============================================================
 # UD
@@ -302,26 +338,48 @@ class LIAE_UD_256(nn.Module):
 
         self.lm_head = LandmarkHead(ae_dims=ae_dims)
 
-        self.exp_gain = 2.0
-        self.id_scale = 0.02
-        self.id_inject_gain = 0.2
-
         self.max_mode = False   # ← デフォルトは OFF
+
+        # ============================
+        # ID / EXP バランス調整（ID 復活版）
+        # ============================
+
+        # ★ ID のスケールを EXP と同等レベルに戻す（0.02 → 1.0）
+        #    → B の顔の特徴（骨格・輪郭・質感）が復活する
+        self.id_scale = 1.0
+
+        # ★ EXP に飲まれないように ID の注入ゲインを弱める（0.2 → 0.1）
+        #    → EXP が表情、ID が見た目を担当する正しい分離になる
+        self.id_inject_gain = 0.1
+
+        # ★ EXP はすでに強いので 6.0 → 2.0 のままでOK
+        #    → EXP が ID を破壊しない適正値
+        self.exp_gain = 2.0
+
+        self.exp_auto_norm = ExpAutoNorm(target_std=0.3)
 
 
     def encode(self, x):
         z_exp_raw, z_id_raw = self.id_encoder(x)
 
-        z_exp = F.interpolate(z_exp_raw, size=(16, 16), mode="area")
+        # EXP 64×64（可視化用）
+        z_exp_64 = z_exp_raw
 
+        # EXP 16×16（decoder 用）
+        z_exp_16 = F.interpolate(z_exp_raw, size=(16, 16), mode="area")
+
+        # ★ EXP の自動スケール安定化（白飛び防止）
+        z_exp_16 = self.exp_auto_norm(z_exp_16)
+
+        # ID のスケール
         z_id = z_id_raw * self.id_scale
+        z_id = self.ud(z_id)
 
-        z_exp = self.ud(z_exp)
-        z_id  = self.ud(z_id)
+        # EXP の強度（exp_gain は 1.0〜2.0 の範囲で OK）
+        z_exp_16 = z_exp_16 * self.exp_gain
 
-        z_exp = z_exp * self.exp_gain
+        return z_exp_64, z_exp_16, z_id
 
-        return z_exp, z_id
 
     def forward(
         self,
@@ -334,67 +392,88 @@ class LIAE_UD_256(nn.Module):
         noise_power=0.0,
         shell_power=0.0,
     ):
-        zA_exp, zA_id = self.encode(img_a)
-        zB_exp, zB_id = self.encode(img_b)
+        # -------------------------
+        # encode
+        # -------------------------
+        zA_exp_64, zA_exp, zA_id = self.encode(img_a)  # zA_exp: [B,768,16,16]
+        zB_exp_64, zB_exp, zB_id = self.encode(img_b)
 
+        # ID に少し EXP を注入
         zA_id = zA_id + zA_exp * self.id_inject_gain
         zB_id = zB_id + zB_exp * self.id_inject_gain
 
-        zA_full = torch.cat([zA_exp, zA_id], dim=1)
+        # ID+EXP を concat（1536ch）
+        zA_full = torch.cat([zA_exp, zA_id], dim=1)  # [B,1536,16,16]
         zB_full = torch.cat([zB_exp, zB_id], dim=1)
 
-
-
-
-        zA_exp_full = torch.cat([zA_exp, zA_exp], dim=1)
+        # decoder 用の EXP も 1536ch に揃える
+        zA_exp_full = torch.cat([zA_exp, zA_exp], dim=1)  # [B,1536,16,16]
         zB_exp_full = torch.cat([zB_exp, zB_exp], dim=1)
 
+        # -------------------------
+        # 自己再構成
+        # -------------------------
         aa = self.decoder_A(zA_full, zA_exp_full)
         bb = self.decoder_B(zB_full, zB_exp_full)
 
         # ============================
-        # ★ SWAP 部分（通常 or MAX モード）
+        # EXP-only 再構成（EXP 育成用）
         # ============================
+        # A 側 EXP-only（64→16 に縮小して decoder に渡す）
+        zero_id_A = torch.zeros_like(zA_id)
 
+        # A 側 EXP-only
+        zA_exp_64_down = F.interpolate(zA_exp_64, size=(16,16), mode="area")
+        zA_exp_64_down = self.exp_auto_norm(zA_exp_64_down)   # ★ 追加
+        zA_exp_only_full = torch.cat([zA_exp_64_down, zA_exp_64_down], dim=1)
+        aa_exp_only = self.decoder_A(zA_exp_only_full, zA_exp_only_full)
+
+
+
+
+        # B 側 EXP-only（同じ処理）
+        zero_id_B = torch.zeros_like(zB_id)
+        # B 側 EXP-only
+        zB_exp_64_down = F.interpolate(zB_exp_64, size=(16,16), mode="area")
+        zB_exp_64_down = self.exp_auto_norm(zB_exp_64_down)   # ★ 追加
+        zB_exp_only_full = torch.cat([zB_exp_64_down, zB_exp_64_down], dim=1)
+        bb_exp_only = self.decoder_B(zB_exp_only_full, zB_exp_only_full)
+
+        # ============================
+        # SWAP 部分（通常 or MAX モード）
+        # ============================
         if self.max_mode:
-            # -----------------------------------------
             # MAX モード：ID を完全に殺して EXP だけで生成
-            # -----------------------------------------
             zero_id_A = torch.zeros_like(zA_id)
             zero_id_B = torch.zeros_like(zB_id)
 
             # A→B：B の ID を殺して A の EXP だけで生成
-            ab_full = torch.cat([zA_exp, zero_id_B], dim=1)
+            ab_full = torch.cat([zA_exp, zero_id_B], dim=1)          # [B,1536,16,16]
             ab = self.decoder_B(ab_full, zA_exp_full)
 
             # B→A：A の ID を殺して B の EXP だけで生成
             ba_full = torch.cat([zB_exp, zero_id_A], dim=1)
             ba = self.decoder_A(ba_full, zB_exp_full)
 
-
         else:
-            # -----------------------------------------
-            # 通常モード（今まで通り）
-            # -----------------------------------------
-
-            # 変更後（EXP 主導）
-            ab_full = torch.cat([zA_exp, zB_id], dim=1)  # A の EXP を先頭に
-            ba_full = torch.cat([zB_exp, zA_id], dim=1)  # B の EXP を先頭に
-
+            # 通常モード（EXP 主導）
+            ab_full = torch.cat([zA_exp, zB_id], dim=1)  # [B,1536,16,16]
+            ba_full = torch.cat([zB_exp, zA_id], dim=1)
 
             ab = self.decoder_B(ab_full, zA_exp_full)
             ba = self.decoder_A(ba_full, zB_exp_full)
 
-
+        # ============================
+        # mask / landmark
+        # ============================
         mask_a_pred = self.mask_decoder(zA_full, zA_exp_full)
         mask_b_pred = self.mask_decoder(zB_full, zB_exp_full)
 
-        lm_a_in = torch.cat([zA_id, zA_exp], dim=1)
+        lm_a_in = torch.cat([zA_id, zA_exp], dim=1)  # [B,1536,16,16]
         lm_b_in = torch.cat([zB_id, zB_exp], dim=1)
         lm_a_pred = self.lm_head(lm_a_in)
         lm_b_pred = self.lm_head(lm_b_in)
 
-        # ★ A→B の表情制約用ランドマーク
         lm_ab_in = torch.cat([zB_id, zA_exp], dim=1)
         lm_ab_pred = self.lm_head(lm_ab_in)
 
@@ -407,24 +486,36 @@ class LIAE_UD_256(nn.Module):
             mask_b_pred=mask_b_pred,
             lm_a_pred=lm_a_pred,
             lm_b_pred=lm_b_pred,
-            lm_ab_pred=lm_ab_pred,  # ★追加
+            lm_ab_pred=lm_ab_pred,
+            aa_exp_only=aa_exp_only,
+            bb_exp_only=bb_exp_only,
         )
+
 
     @torch.no_grad()
     def make_preview_grid(self, preview_dict):
 
-        a_orig = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0)
-        aa     = to_image_tensor(preview_dict["aa"]).unsqueeze(0)
-        ab     = to_image_tensor(preview_dict["ab"]).unsqueeze(0)
+        # A 側
+        a_orig       = to_image_tensor(preview_dict["a_orig"]).unsqueeze(0)
+        aa           = to_image_tensor(preview_dict["aa"]).unsqueeze(0)
+        ab           = to_image_tensor(preview_dict["ab"]).unsqueeze(0)
+        aa_exp_only  = to_image_tensor(preview_dict["aa_exp_only"]).unsqueeze(0)
 
-        b_orig = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0)
-        bb     = to_image_tensor(preview_dict["bb"]).unsqueeze(0)
-        ba     = to_image_tensor(preview_dict["ba"]).unsqueeze(0)
+        # B 側
+        b_orig       = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0)
+        bb           = to_image_tensor(preview_dict["bb"]).unsqueeze(0)
+        ba           = to_image_tensor(preview_dict["ba"]).unsqueeze(0)
+        bb_exp_only  = to_image_tensor(preview_dict["bb_exp_only"]).unsqueeze(0)
 
+        # mask
         mask_a = prepare_mask(preview_dict["mask_a"].unsqueeze(0))
         mask_b = prepare_mask(preview_dict["mask_b"].unsqueeze(0))
 
-        row_a = torch.cat([a_orig, aa, ab, mask_a], dim=3)
-        row_b = torch.cat([b_orig, bb, ba, mask_b], dim=3)
+        # A 行：A_orig / AA / AB / AA_EXP_ONLY / mask
+        row_a = torch.cat([a_orig, aa, ab, aa_exp_only, mask_a], dim=3)
 
+        # B 行：B_orig / BB / BA / BB_EXP_ONLY / mask
+        row_b = torch.cat([b_orig, bb, ba, bb_exp_only, mask_b], dim=3)
+
+        # 2 行を縦に結合
         return torch.cat([row_a, row_b], dim=2)

@@ -5,16 +5,14 @@ import time
 import torch
 from torch.cuda.amp import GradScaler
 import torch.nn as nn
-
 from torchvision.utils import save_image
+
+from app.utils.preview_utils import to_image_tensor
 
 
 # ================================
 # 決着テスト（EXP に A の表情があるか判定）
 # ================================
-from torchvision.utils import save_image
-from app.utils.preview_utils import to_image_tensor
-
 @torch.no_grad()
 def decisive_exp_test(trainer, img_a_raw, img_b_raw):
     model = trainer.model
@@ -25,10 +23,11 @@ def decisive_exp_test(trainer, img_a_raw, img_b_raw):
     img_b = to_image_tensor(img_b_raw).unsqueeze(0).to(device)
 
     # ★ encode() を通して「本番と同じ EXP」を取る
-    zA_exp, _ = model.encode(img_a)
-    zB_exp, _ = model.encode(img_b)
+    # encode は (z_exp_64, z_exp_16, z_id) を返す
+    zA_exp_64, zA_exp, zA_id = model.encode(img_a)
+    zB_exp_64, zB_exp, zB_id = model.encode(img_b)
 
-    # ID はゼロ固定
+    # ID はゼロ固定（16×16 の EXP と同じ形）
     z_id = torch.zeros_like(zA_exp)
 
     out_Aexp = model.decoder_B(
@@ -42,7 +41,6 @@ def decisive_exp_test(trainer, img_a_raw, img_b_raw):
     )
 
     return out_Aexp, out_Bexp
-
 
 
 class BaseTrainer:
@@ -73,7 +71,6 @@ class BaseTrainer:
         try:
             preview_dict = self.make_preview(outputs, batch_a, batch_b)
 
-
             if not hasattr(self.model, "make_preview_grid"):
                 raise NotImplementedError(
                     "Model must implement make_preview_grid(preview_dict)"
@@ -90,13 +87,14 @@ class BaseTrainer:
             vutils.save_image(grid, preview_path, normalize=False)
             print(f"[Preview] Saved: {preview_path}")
 
-            return preview_dict # ★ これを追加
+            # ★ 後続の decisive EXP テスト用に preview_dict を返す
+            return preview_dict
 
         except Exception as e:
             print(f"[Preview] Failed: {e}")
 
     # ---------------------------------------------------------
-    # checkpoint 保存 / ロード（変更なし）
+    # checkpoint 保存 / ロード
     # ---------------------------------------------------------
     def _save_checkpoint(self):
         state = {
@@ -167,7 +165,6 @@ class BaseTrainer:
         if "step" in state:
             self.global_step = state["step"]
             print(f"[Resume] Resumed from step {self.global_step}")
-
 
     # ---------------------------------------------------------
     # メインループ
@@ -361,7 +358,6 @@ class BaseTrainer:
                     except Exception as e:
                         print(f"[SWAP] failed ({e})")
 
-
                     # ★ preview 保存は必ず実行
                     try:
                         preview_dict = self.save_preview(outputs, batch_a, batch_b)
@@ -373,10 +369,11 @@ class BaseTrainer:
                         img_b = to_image_tensor(preview_dict["b_orig"]).unsqueeze(0).to(self.device)
 
                         # ★ encode() を通して「学習時と同じ EXP」を取得
-                        zA_exp, _ = self.model.encode(img_a)
-                        zB_exp, _ = self.model.encode(img_b)
+                        # encode は (z_exp_64, z_exp_16, z_id) を返す
+                        zA_exp_64, zA_exp, zA_id = self.model.encode(img_a)
+                        zB_exp_64, zB_exp, zB_id = self.model.encode(img_b)
 
-                        # ID はゼロ固定
+                        # ID はゼロ固定（16×16 EXP と同じ形）
                         z_id = torch.zeros_like(zA_exp)
 
                         # A の EXP だけを使った出力
@@ -398,8 +395,6 @@ class BaseTrainer:
 
                     except Exception as e:
                         print(f"[Preview] Failed: {e}")
-
-
 
         except KeyboardInterrupt:
             print("\n[Exit] Caught Ctrl+C, saving final checkpoint...")
