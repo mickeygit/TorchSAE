@@ -87,11 +87,11 @@ class Decoder(nn.Module):
             z_exp = F.interpolate(z_exp, size=x.shape[2:], mode="nearest")
 
         # ★ EXP の強度を弱める（3.0 → 1.0）
-        x = x + z_exp * 0.5
+        x = x + z_exp * 0.3
 
         # ★ ゲートの強度も弱める（2.0 → 1.0）
         gate1 = self.exp_gate1(z_exp)
-        x = x * (1.0 + gate1 * 1.0)
+        x = x * (1.0 + gate1 * 0.6)
 
         x = self.up1(x)
 
@@ -100,7 +100,7 @@ class Decoder(nn.Module):
             gate2 = F.interpolate(gate2, size=x.shape[2:], mode="nearest")
 
         # ★ ここも 2.0 → 1.0
-        x = x * (1.0 + gate2 * 1.0)
+        x = x * (1.0 + gate2 * 0.6)
 
         x = self.up2(x)
         x = self.up3(x)
@@ -248,14 +248,13 @@ class DFEncoder(nn.Module):
         z_exp_64 = self.to_exp_shallow(x3r)   # [B,768,64,64]
 
         # EXP 正規化（弱め）
-        z_exp_64 = self.ud(z_exp_64)
+        # z_exp_64 = self.ud(z_exp_64)
 
         return z_exp_64, z_id
 
 class ExpAutoNorm(nn.Module):
     """
-    EXP の振幅を自動調整して decoder の白飛びを防ぐ。
-    入力 EXP の標準偏差を測り、ターゲット値に合わせてスケールする。
+    EXP の振幅をチャネルごとに安定化（バッチ全体で潰さない）。
     """
     def __init__(self, target_std=0.5, eps=1e-6):
         super().__init__()
@@ -263,11 +262,11 @@ class ExpAutoNorm(nn.Module):
         self.eps = eps
 
     def forward(self, z):
-        # 現在の EXP の標準偏差
-        mean = z.mean(dim=[1,2,3], keepdim=True)
-        z = z - mean                      # ★ 追加：EXP のバイアスを除去
+        # z: [B, C, H, W]
+        mean = z.mean(dim=[2, 3], keepdim=True)              # ★ チャネルごと
+        z = z - mean
 
-        std = z.std(dim=[1,2,3], keepdim=True) + self.eps
+        std = z.std(dim=[2, 3], keepdim=True) + self.eps     # ★ ここもチャネルごと
         scale = self.target_std / std
         scale = scale.clamp(0.1, 10.0)
         return z * scale
@@ -298,7 +297,8 @@ class UniformDistribution(nn.Module):
     def forward(self, x):
         mean = x.mean(dim=[2, 3], keepdim=True)
         std = x.std(dim=[2, 3], keepdim=True) + self.eps
-        return (x - mean) / (std * 0.8 + self.eps)
+        # ★ 0.8 → 1.5 にして ID の振幅を少し戻す
+        return (x - mean) / (std * 1.5 + self.eps)
 
 # ============================================================
 # Landmark head
@@ -338,23 +338,23 @@ class LIAE_UD_256(nn.Module):
 
         self.lm_head = LandmarkHead(ae_dims=ae_dims)
 
-        self.max_mode = False   # ← デフォルトは OFF
+        self.max_mode = False
+
+
 
         # ============================
-        # ID / EXP バランス調整（ID 復活版）
+        # ID / EXP バランス調整
         # ============================
+        # ★ ID / EXP バランス調整
 
-        # ★ ID のスケールを EXP と同等レベルに戻す（0.02 → 1.0）
-        #    → B の顔の特徴（骨格・輪郭・質感）が復活する
-        self.id_scale = 1.0
+        # ID を少し強める（A→A の質感を支える）
+        self.id_scale = 1.2
 
-        # ★ EXP に飲まれないように ID の注入ゲインを弱める（0.2 → 0.1）
-        #    → EXP が表情、ID が見た目を担当する正しい分離になる
-        self.id_inject_gain = 0.1
+        # ID 注入を少し強める（EXP に形状を任せすぎない）
+        self.id_inject_gain = 0.2
 
-        # ★ EXP はすでに強いので 6.0 → 2.0 のままでOK
-        #    → EXP が ID を破壊しない適正値
-        self.exp_gain = 2.0
+        # EXP は少し弱めに（ID 侵食を防ぐ）
+        self.exp_gain = 1.3
 
         self.exp_auto_norm = ExpAutoNorm(target_std=0.3)
 
@@ -448,7 +448,7 @@ class LIAE_UD_256(nn.Module):
             zero_id_B = torch.zeros_like(zB_id)
 
             # A→B：B の ID を殺して A の EXP だけで生成
-            ab_full = torch.cat([zA_exp, zero_id_B], dim=1)          # [B,1536,16,16]
+            ab_full = torch.cat([zA_exp, zero_id_B], dim=1)
             ab = self.decoder_B(ab_full, zA_exp_full)
 
             # B→A：A の ID を殺して B の EXP だけで生成
@@ -456,12 +456,17 @@ class LIAE_UD_256(nn.Module):
             ba = self.decoder_A(ba_full, zB_exp_full)
 
         else:
-            # 通常モード（EXP 主導）
-            ab_full = torch.cat([zA_exp, zB_id], dim=1)  # [B,1536,16,16]
-            ba_full = torch.cat([zB_exp, zA_id], dim=1)
+            # 通常モード（EXP 主導＋ID を少し混ぜる）
+            # ★ B 側 ID に A の ID を少し混ぜる
+            mixed_B_id = zB_id + zA_id * 0.1
+            mixed_A_id = zA_id + zB_id * 0.1
+
+            ab_full = torch.cat([zA_exp, mixed_B_id], dim=1)
+            ba_full = torch.cat([zB_exp, mixed_A_id], dim=1)
 
             ab = self.decoder_B(ab_full, zA_exp_full)
             ba = self.decoder_A(ba_full, zB_exp_full)
+
 
         # ============================
         # mask / landmark
