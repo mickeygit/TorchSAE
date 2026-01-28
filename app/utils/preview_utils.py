@@ -32,11 +32,10 @@ def prepare_mask(mask):
     mask = mask.repeat(1, 3, 1, 1)
     return mask
 
-
 def make_preview_grid(
-    a_orig=None, aa=None, ab=None, mask_a=None,
-    b_orig=None, bb=None, ba=None, mask_b=None,
-    nrow=4
+    a_orig=None, aa=None, ab=None, aa_exp_only=None, mask_a=None,
+    b_orig=None, bb=None, ba=None, bb_exp_only=None, mask_b=None,
+    nrow=6
 ):
     """
     Returns a single grid image tensor (3,H,W) for saving.
@@ -47,7 +46,7 @@ def make_preview_grid(
 
     # Row A
     row_a = []
-    for x in [a_orig, aa, ab, mask_a]:
+    for x in [a_orig, aa, ab, aa_exp_only, mask_a]:
         if x is not None:
             row_a.append(to_image_tensor(x))
     if len(row_a) > 0:
@@ -55,7 +54,7 @@ def make_preview_grid(
 
     # Row B
     row_b = []
-    for x in [b_orig, bb, ba, mask_b]:
+    for x in [b_orig, bb, ba, bb_exp_only, mask_b]:
         if x is not None:
             row_b.append(to_image_tensor(x))
     if len(row_b) > 0:
@@ -103,8 +102,6 @@ def to_image_tensor(x: torch.Tensor) -> torch.Tensor:
 
     return x.clamp(0.0, 1.0)
 
-
-
 @torch.no_grad()
 def build_preview_dict(
     outputs: ModelOutput,
@@ -122,6 +119,10 @@ def build_preview_dict(
     ab = outputs.ab[0].detach().cpu()
     ba = outputs.ba[0].detach().cpu()
 
+    # ★ EXP-only 追加
+    aa_exp_only = outputs.aa_exp_only[0].detach().cpu()
+    bb_exp_only = outputs.bb_exp_only[0].detach().cpu()
+
     mask_a = torch.sigmoid(outputs.mask_a_pred[0]).detach().cpu()
     mask_b = torch.sigmoid(outputs.mask_b_pred[0]).detach().cpu()
 
@@ -135,6 +136,11 @@ def build_preview_dict(
         "bb": to_01(bb),
         "ab": to_01(ab),
         "ba": to_01(ba),
+
+        # ★ EXP-only を preview に追加
+        "aa_exp_only": to_01(aa_exp_only),
+        "bb_exp_only": to_01(bb_exp_only),
+
         "mask_a": to_01(mask_a),
         "mask_b": to_01(mask_b),
     }

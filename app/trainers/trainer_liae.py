@@ -105,7 +105,7 @@ class TrainerLIAE(BaseTrainer):
             # ★ expr_w も auto 対応（なければ cfg かデフォルト 2.0）
             expr_w = self._get_auto_value("expr_weight")
             if expr_w is None:
-                expr_w = float(getattr(self.cfg, "expr_loss_weight", 2.0))
+                expr_w = float(getattr(self.cfg, "expr_loss_weight", 0.05))
 
             warp_prob = self._get_auto_value("warp_prob")
             if warp_prob is None:
@@ -131,7 +131,7 @@ class TrainerLIAE(BaseTrainer):
             clip_grad = self.cfg.clip_grad
 
             # ★ 非 auto 時は cfg.expr_loss_weight があれば使い、なければ 2.0
-            expr_w = float(getattr(self.cfg, "expr_loss_weight", 2.0))
+            expr_w = float(getattr(self.cfg, "expr_loss_weight", 0.05))
 
             warp_prob = float(self.cfg.random_warp)
             hsv_power = float(self.cfg.random_hsv_power)
